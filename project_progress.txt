@@ -1,0 +1,40 @@
+need to fix the reasoning ability of the system . for that we need to understand the working of the Ask AI about this file . need to provide a good  reasoning ability and good answers( accuracy and  reasoning power ) . 
+
+
+Also  we need to  fix the UI ( fix it for image preview, extracted text and some more 
+
+extracted text may be ( or we can delete it).
+
+=============
+
+
+we need to make some changes in our last added feature "Ask AI about this feature".  when i selected a a file( a .pptx file which contains text, diagrams, images ) and asked a simple question "howmany people worked on this project? " , after 30 seconds of thinking , i got this answer "The available documents do not contain this information."  .  i think we needs to be very clear on this feature . i wish to or plan to make it into  a feature where user can ask any questions from selected file, then the answer should  contain the necessary informations . though the answer may  not exist as a straight, we need to make it happen and our system should be capable of providing the answer to the question the user asked . (  it can be straight or indirect , its our duty to  provide the necessary informations ) 
+
+tell me how  can we implement it . and come up with a plan.
+
+
+The available documents do not contain this information.
+
+
+lets fix some UI related issues.
+currently , the major UI parts are not fixed.
+1) when an image is selected ,  "Indexed  Files " section is visible  , but when an .pptx file is selected , then that UI  element of "Indexed  Files" is not visible . either remove the entire section of "Indexed Files"  so that i wont popup randomly . or provide a fixed space to it . 
+
+2) for  image files , all the pictures have the same preview size ( its good ) . when a text related file is selected , then i can see the Extracted text button and when it clicked i can see the extracted text above it  .  Its working fine. the problem is , under it , the basic details is also shown and the below it( in the same UI section , some portion of the Extracted text is also  shown  . its creating a mess . Solve it .
+
+3) earlier , we decided that all sections size will be fixed . now  i think its not need to be like that . lets  do one thing  . Fix the size for all sections . manual scrolling of each section to view elements or to select a feature is not a UX principle.
+
+
+Error: No files Indexed yet. Use Ask Al about this file on a file first, or run a Scan to index files for semantic search.  | this is the thing i wish to solve now .
+
+
+
+
+i dont know  the exact workflow of the feature "Semantic Search" . but i have a doubt . i tried to test it by providing simple text in the Semantic Search Bar . i got this error . "Error: No files Indexed yet. Use Ask Al about this file on a file first, or run a Scan to index files for semantic search."  . as i mentioned , i dont know its workflow. but i think  we can perform the indexing as a "Scan folder" feature which does the process of Indexing of all kinda files in the current directory . ( since there is already a feature "Scan Folder" . dont merge the propsed with the current " Scan Folder ".   then after this implementation and the Indexing procedure , i think the system would have an idea of what the contents of  the file types and yet it will enable a universal ( in folder)  search which would take natural formed user inputs like ( which file contains this content , which image contains the car with color "red" , which slide mentions the author xyz , invoice received from company-xyz  ( like different types and differrent scoped questions.)) . what do you think  ? ( i need this to be capable of handling almost all files ,(except .zip and compressed files ) . i think we had a discussion on using the CLIP and BLIP  models from OpenAI (  not  fixed , maybe its a rough guss  or  a off topic ) for image realated works . what Do you think of it?
+
+
+when the "Index Folder" method is clicked , then a window appears and starts indexing . But  i cannot minimize the small screen which shows the information and the progress of the files in the current folder. check  the issure and fix it . i should be able to minimize it.
+
+
+
+There are some logical problems with our "Indexing for AI" .the indexing is completed successfully . But when i  asked about some questions where the answers lies  in the files( in the current directory iteself ) , but the answers it provided is not  that great and not accurate and it refers to  all file available referances. WHat i expect is , when a user is asking a question , the System should think about it( using AI ) and then it should find the most correct answer and its realted file . Why iam saying is, when i asked a question which is about an diagram and code , it finds all the files where there is a small mention ( which was too not mentioned about the code itself )  as a result . ALso the model fails to detect the actual meaning of the question. when i asked for a image which contains information of  a program code . it gave me the referances from all the current directory-files which includes the text files too .  | so i think there are some problems with the logic behind the reasoning logic of  "Semantic Search " . SO find the reasons why it happened  and create  a plan to fix  it.

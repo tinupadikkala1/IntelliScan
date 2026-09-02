@@ -1,0 +1,37 @@
+/* IntelliVault - dark theme */
+QWidget {
+    background-color: #1e1e1e;
+    color: #eeeeee;
+    font-family: "Segoe UI", "Ubuntu", sans-serif;
+}
+QMenuBar, QStatusBar, QToolBar {
+    background-color: #2b2b2b;
+}
+QMenuBar::item:selected, QMenu::item:selected {
+    background-color: #3a3a3a;
+}
+QListView, QTreeView, QTextEdit, QPlainTextEdit {
+    background-color: #252525;
+    border: 1px solid #333;
+}
+QPushButton {
+    background-color: #3a3a3a;
+    border: 1px solid #555;
+    padding: 4px 10px;
+    border-radius: 3px;
+}
+QPushButton:hover {
+    background-color: #454545;
+}
+QComboBox, QLineEdit {
+    background-color: #2b2b2b;
+    border: 1px solid #555;
+    padding: 3px;
+}
+QDockWidget {
+    titlebar-close-icon: none;
+    titlebar-normal-icon: none;
+}
+QTabWidget::pane {
+    border: 1px solid #333;
+}

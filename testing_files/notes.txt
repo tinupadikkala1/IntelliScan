@@ -1,0 +1,146 @@
+================================================================================
+ACADEMIC STUDY GUIDE: DIGITAL FUNDAMENTALS AND COMPUTER ARCHITECTURE
+MODULE: RE-COMPILING COMPLETE SYLLABUS REFERENCE MANIFEST
+LEVEL: UNDERGRADUATE COMPUTER SCIENCE / ENGINEERING CORE
+================================================================================
+
+--------------------------------------------------------------------------------
+MODULE 1: NUMBER SYSTEMS, RECENT CODES, AND RADIX CONVERSIONS
+--------------------------------------------------------------------------------
+
+1.1 Introduction to Digital Systems
+- Digital systems process discrete, quantized information rather than continuous variables.
+- Continuous physical quantities are sampled and mapped to binary voltage thresholds.
+- Logic High (1) represents a high voltage state (e.g., 1.8V, 3.3V, or 5V depending on CMOS tech).
+- Logic Low (0) represents a low voltage baseline (typically ground or 0V).
+- Digital circuits offer high noise immunity due to defined noise margins.
+- Analog components degrade uniformly under interference; digital paths filters noise.
+
+1.2 Positional Number Systems and Base Scaling
+- Positional numbering relies on a base or radix (R) determining the values of indices.
+- Value expression: V = Summation from i=-m to n-1 of (d_i * R^i).
+- Binary (Radix R = 2): Utilizes basic discrete characters {0, 1}.
+- Octal (Radix R = 8): Utilizes structural discrete characters {0, 1, 2, 3, 4, 5, 6, 7}.
+- Decimal (Radix R = 10): Standard consumer arithmetic set {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}.
+- Hexadecimal (Radix R = 16): Uses characters {0-9, A, B, C, D, E, F} for memory shorthand.
+- Conversion from Base R to Base 10: Evaluate positional polynomial explicitly.
+- Conversion from Base 10 to Base R: Continuous division (integers) and multiplication (fractions).
+
+1.3 Representation of Signed Integers
+- Unsigned Integers: All bits contribute strictly to magnitude expression. Range: 0 to (2^n)-1.
+- Sign-Magnitude: Leftmost bit is designated as sign (0=Positive, 1=Negative).
+  * Major flaw: Possesses duplicate representations for zero (+0 and -0).
+- 1's Complement: Invert every bit of a positive number to create its negative counterpart.
+  * Structural flaw: Still retains separate positive and negative zero profiles.
+- 2's Complement: Add 1 to the least significant bit of the 1's complement configuration.
+  * Advantage: Unique zero mapping and straightforward hardware subtraction layout.
+  * Mathematical Range for 2's Complement: -(2^(n-1)) to +(2^(n-1) - 1).
+  * To negate a 2's complement value, invert all bits and add 1 to the LSB.
+
+1.4 Binary Coded Decimal (BCD) and Character Codes
+- BCD (8421 Code): Maps each decimal digit directly to a fixed 4-bit binary string.
+  * Invalid configurations: 1010, 1011, 1100, 1101, 1110, 1111 (values 10 to 15 decimal).
+  * If a BCD addition results in an invalid state or generates a carry, add 0110 (6).
+- Excess-3 Code: Unweighted code derived by adding 3 (0011) to the standard BCD configuration.
+  * Self-complementing trait: The 1's complement of an Excess-3 item yields its 9's complement.
+- Gray Code: An unweighted cyclic code where adjacent numerical states vary by only a single bit.
+  * Binary to Gray: G_n = B_n; G_i = B_i XOR B_(i+1).
+  * Used in rotational encoders to prevent transient reading race conditions.
+- ASCII: 7-bit text communication standard defining 128 characters.
+- Unicode (UTF-8): Variable-width standard supporting deep international character sets.
+
+--------------------------------------------------------------------------------
+MODULE 2: BOOLEAN ALGEBRA AND HARDWARE LOGIC GATES
+--------------------------------------------------------------------------------
+
+2.1 Axiomatic Postulates and Algebraic Theorems
+- Boolean algebra handles variables limited to binary true (1) and false (0) assignments.
+- Closure Property: Operations on binary sets always yield binary outputs.
+- Identity Laws: A + 0 = A; A * 1 = A.
+- Commutative Laws: A + B = B + A; A * B = B * A.
+- Associative Laws: A + (B + C) = (A + B) + C; A * (B * C) = (A * B) * C.
+- Distributive Laws: A * (B + C) = (A * B) + (A * C); A + (B * C) = (A + B) * (A + C).
+- Complementarity Laws: A + A' = 1; A * A' = 0.
+- De Morgan's First Theorem: (A + B)' = A' * B' (NOR equals inverted AND).
+- De Morgan's Second Theorem: (A * B)' = A' + B' (NAND equals inverted OR).
+- Duality Principle: Swapping AND/OR operators and 1/0 constants preserves truth validity.
+
+2.2 Core Truth Tables and Universal Logic Gates
+- AND Gate: Output is high if and only if all system input paths are actively asserted.
+- OR Gate: Output is high if at least one system input path is actively asserted.
+- NOT Gate: Single-input inverter that toggles the logical state.
+- NAND Gate: Negative-AND execution logic. Output is low only when all inputs are 1.
+- NOR Gate: Negative-OR execution logic. Output is high only when all inputs are 0.
+- NAND and NOR gates are universal gates; any Boolean function can be built using them alone.
+- XOR Gate (Exclusive-OR): High output if inputs are mismatched. Y = A'B + AB'.
+- XNOR Gate (Exclusive-NOR): High output if inputs are identical. Y = AB + A'B'.
+
+2.3 Canonical and Standard Representations
+- Minterm (m_i): A product term containing all system variables exactly once in normal or complemented form.
+- Maxterm (M_i): A sum term containing all system variables exactly once in normal or complemented form.
+- Sum of Products (SOP): Canonical layout formed by OR-ing distinct minterms.
+- Product of Sums (POS): Canonical layout formed by AND-ing distinct maxterms.
+- Shorthand notation: F(A,B,C) = Sigma m(1, 4, 7) or Pi M(0, 2, 3, 5, 6).
+
+2.4 Optimization via Karnaugh Maps (K-Maps)
+- K-Maps organize minterms visually using Gray code sorting to show adjacent states.
+- 2-Variable K-Map: Contiguous matrix containing 4 functional operational cells.
+- 3-Variable K-Map: Contiguous matrix containing 8 functional operational cells.
+- 4-Variable K-Map: Contiguous matrix containing 16 functional operational cells.
+- Grouping rules: Combine adjacent cells in power-of-two blocks (1, 2, 4, 8, 16).
+- Essential Prime Implicant: A minterm group that covers a cell no other group can reach.
+- Don't Care Conditions (X): Input configurations that cannot occur or whose outputs don't affect performance.
+  * Can be treated as 1 or 0 to form larger, more efficient K-Map loops.
+
+--------------------------------------------------------------------------------
+MODULE 3: COMBINATIONAL LOGIC CIRCUITS DESIGN
+--------------------------------------------------------------------------------
+
+3.1 Combinational Circuit Operational Profile
+- Combinational logic outputs depend strictly on current inputs.
+- These circuits contain no memory, storage elements, feedback loops, or internal state tracking.
+
+3.2 Core Arithmetic Blocks
+- Half Adder: Sums 2 input bits to yield Sum (S = A XOR B) and Carry (C = A AND B).
+- Full Adder: Sums 2 input bits plus an incoming Carry bit (C_in).
+  * S = A XOR B XOR C_in.
+  * C_out = AB + BC_in + AC_in.
+- Ripple Carry Adder: Chains n full adders together by wire.
+  * Delay Bottleneck: Propagation latency builds up as the carry ripples from LSB to MSB.
+- Carry Lookahead Adder (CLA): Eliminates ripple delay by calculating carry vectors upfront.
+  * Generate Token: G_i = A_i * B_i.
+  * Propagate Token: P_i = A_i + B_i.
+  * Calculated Carry Statement: C_(i+1) = G_i + (P_i * C_i).
+
+3.3 Data Routing and Distribution Modules
+- Decoder: Converts an n-bit coded input into a single active output among 2^n lines.
+  * Example: A 3-to-8 decoder routes binary inputs to activate one of eight individual lines.
+- Encoder: Performs the inverse decoder task, converting an active line into an n-bit binary code.
+- Priority Encoder: Resolves simultaneous inputs by encoding only the highest-priority line.
+- Multiplexer (MUX): Acts as a digital data selector. Routes one of 2^n data inputs to a single output line based on n select lines.
+- Demultiplexer (DEMUX): Takes a single input line and routes it to one of 2^n outputs based on n select lines.
+- Digital Comparator: Inspects two binary blocks (A, B) to see if A > B, A < B, or A = B.
+
+--------------------------------------------------------------------------------
+MODULE 4: SEQUENTIAL LOGIC CIRCUITS AND STATE SYSTEMS
+--------------------------------------------------------------------------------
+
+4.1 Memory Elements: Latches vs. Flip-Flops
+- Sequential logic outputs depend on both current inputs and the circuit's history (stored state).
+- Latches: Level-sensitive storage devices. They change state continuously as long as the clock signal stays high.
+- Flip-Flops: Edge-triggered storage devices. They capture data only on the rising or falling edge of a clock signal.
+
+4.2 Flip-Flop Classifications and Characteristic Profiles
+- SR Flip-Flop (Set-Reset): Built using cross-coupled NOR or NAND gates.
+  * Flaw: Inputting S=1, R=1 leads to an unstable, invalid state.
+- JK Flip-Flop: Fixes the SR invalid state by toggling the output when J=1, K=1.
+  * Race-Around Condition: If the clock pulse is too wide when J=1 and K=1, the output toggles repeatedly, causing stability issues.
+  * Solution: Use a Master-Slave arrangement or edge-triggered designs.
+- D Flip-Flop (Data): Captures and holds the input value at the clock edge. Output equation: Q_next = D.
+- T Flip-Flop (Toggle): Reverses its output state if T=1 when the clock cycles. Output equation: Q_next = T XOR Q.
+
+4.3 Registers, Counters, and Finite State Machines (FSMs)
+- Registers: Groups of cascaded D flip-flops used to store multi-bit data words.
+- Shift Registers: Move data bits through a chain of flip-flops on every clock cycle.
+  * Setup configurations: SISO (Serial-In, Serial-Out), SIPO, PISO, PIPO.
+- Asynchronous Counters (Ripple Counters): The clock drives only the first flip-flop. Each subsequent stage is clocked by the output of the previous one, piling up propagation delays.

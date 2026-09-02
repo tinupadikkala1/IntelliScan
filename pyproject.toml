@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "intellivault"
+version = "1.0.0"
+description = "IntelliVault - offline AI-powered smart file intelligence system"
+requires-python = ">=3.12"
+dependencies = [
+    "pyside6>=6.6",
+    "sqlalchemy>=2.0",
+    "watchdog>=4.0",
+    "mutagen>=1.47",
+    "requests>=2.31",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+# Core AI indexing / semantic search
+ai = [
+    "faiss-cpu>=1.7",
+    "sentence-transformers>=2.6",
+    "transformers>=4.40",
+]
+# Image intelligence (CLIP embeddings, quality analysis, object detection helpers)
+image = [
+    "pillow>=10.0",
+    "opencv-python>=4.9",
+    "torch>=2.2",
+]
+# OCR (system tesseract binary also required)
+ocr = [
+    "pytesseract>=0.3.10",
+]
+# Speech transcription
+speech = [
+    "openai-whisper>=20231117",
+    "torch>=2.2",
+]
+# Development / test
+dev = [
+    "pytest>=8.0",
+    "pytest-qt>=4.4",
+]
+
+[tool.setuptools]
+packages = [
+    "app", "core", "ui", "ui.dialogs", "widgets", "services", "database",
+    "engines", "plugins", "ai", "conversation", "graph", "agent",
+    "extractors", "vision", "speech", "video", "text_extraction",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

@@ -1,0 +1,88 @@
+{
+  "general": {
+    "startup_path": "~",
+    "single_click_open": false,
+    "confirm_delete": true,
+    "inactivity_reminder_enabled": true,
+    "inactivity_threshold_days": 2
+  },
+  "appearance": {
+    "theme": "dark",
+    "accent": "#3daee9"
+  },
+  "explorer": {
+    "default_view": "grid",
+    "show_hidden": false,
+    "thumbnails": true
+  },
+  "database": {
+    "path": "config/intellivault.db"
+  },
+  "performance": {
+    "max_threads": 6,
+    "cache_size_mb": 256
+  },
+  "plugins": {
+    "enabled": []
+  },
+  "ai": {
+    "enabled": false
+  },
+  "ocr": {
+    "enabled": false
+  },
+  "models": {
+    "enabled": false
+  },
+  "embeddings": {
+    "enabled": false
+  },
+  "llm": {
+    "enabled": false
+  },
+  "batch4": {
+    "default_scope": "folder",
+    "history_chars": 6000,
+    "history_turns": 12,
+    "top_k": 5,
+    "threshold": 0.3,
+    "graph_enabled": true,
+    "agent_max_steps": 8,
+    "agent_timeout_s": 300,
+    "agent_enabled": true
+  },
+  "batch5": {
+    "empty_duplicates_visible": true,
+    "near_duplicate_threshold": 0.9,
+    "similar_file_threshold": 0.75,
+    "max_related_results": 10,
+    "classification_batch_size": 10,
+    "suggestion_min_confidence": 0.5,
+    "dashboard_refresh_auto": true
+  },
+  "batch6": {
+    "caption_model": "moondream:latest",
+    "caption_enabled": true,
+    "duplicate_removal_min_confidence": 0.7,
+    "folder_classification_recursive": true,
+    "folder_organization_enabled": true,
+    "trash_dir": "config/trash"
+  },
+  "batch7": {
+    "image_quality_enabled": true,
+    "object_detection_enabled": true,
+    "object_detection_model": "moondream:latest",
+    "object_detection_threshold": 0.4,
+    "reverse_image_min_similarity": 0.55,
+    "image_filter_threshold": 0.45,
+    "folder_summary_enabled": true,
+    "folder_summary_model": "qwen-local:latest",
+    "rename_pattern": "{category}_{title}",
+    "timeline_max_events": 2000
+  },
+  "favorites": {
+    "paths": [
+      "/tmp/pytest-of-user/pytest-2/test_favorites_add_remove0"
+    ]
+  }
+}

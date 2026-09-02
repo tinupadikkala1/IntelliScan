@@ -1,0 +1,125 @@
+look . i will tell you what  to do  . now the updated thing gave to  me is not a perfect and its having some problems. i will give you a pdf which is a presentation(  in the same format ). learn about it (  not the content, but  the style ). how and where the italic property is added , how the space is organized ( if a page is  full , then nothing wrong in adding one more page to fit it) , the proper justification(center aligned) for  all pages , if we can fit multiple points( not big , one word points, then you add one after  another in a row (with respect to the size and the justification ), also provide trademarks  as per the reference .  ALso provide table  names . Also not how  quotes are provided in the literature review .( and its distribution ) . also  make sure that all the contents in all page is justified ( and a professional style is  followed in every page) . Also i will give me some suggestions
+
+1)First page of introduction, last point , second line is not  visible .
+
+2) in 8th page , POSIX is outside the justification, also that page itself has justification problems .
+
+3) 9th page also have some problems .Last point second page (  one word is outside the justification)
+
+4) 2 tables in literature review , its structure and placement is wrong . footer is overlapped with table border and the table  name placement (  with respect to the reference)
+
+5) 16th page's justification is having some problems .
+
+6) In requirement specfications, Memory is another point, its current placement is wrong.
+
+7) regarding layout of "registered" and "trademark" signs, there are some changes. fix it too .  ( the code is given in the prev chat ).
+
+8) 20 th page is also not justified .
+
+
+Inorder to  provide proper justification and spacing , you can add some spaces between words to make it happen.
+
+also refer to the given document to  fetch where he added the style 'italic'  to  the words and keywords. (  initially when i said  it  to  you , you made it bold)
+
+So provide all the changes in the .zip file and use your brain to make it happen . ( i know you are brave)
+
+give me 5  android app ideas(it can be games which i prefer more) which should be 
+
+1) new idea , never seen and entirely a new concept
+2) must be very simple to build with minimal or no  animation or graphics works required
+3) the developer should be able to create it only using AI  tools
+4) it should be addictive and it should attract a wide range of users and design it in a way that  they wish to play it most of time.
+5) there should be a lot of opportunities to  show adds( advertisements  ) of different types ( full screen, interstitial, banner adds etc )
+6) it should contain multiple levels ( a  lot of)
+7) it should not violate or  hard the android app or  android app listing policies ( or every OEM)
+8) it should be a client side-ed app ( meaning no server, no leaderboard etc(it my arrive in future ))
+9) it should have a good looking and attractive and addictive UI  and UX components . 
+10) white theme and dark theme are necessary .( without loosing or missing the visibility of any components)
+
+
+for each app's IDEA , give me a complete description of its
+1) working
+2)  implementation
+3) architecture
+4) why its a new idea and why and how can we make it more addictive
+5) how  can we include adds  here and its economics 
+6) the core game engine
+7) all the things a developer and the app's investor needs to know
+.
+for each app , create and store the mentioned things in a .md file ( so there will give me 5  android app ideas which should  be 5 .md files in total) 
+
+
+
+=================================================================================
+
+this was my first request to the claude AI
+
+"this is my latex project . It is  almost done , yet it is  noted that some changes has to be made in-order to fix this thing .  i will give you those changes one by one . Apply it and make those changes in my original LaTex project .                                                                        these are my requirements and  some of  them are universal in the entire slide .
+make sure to justify all the contents into center . 
+In literature review(and in the whole presentation) highlight the keywords , parameters or techniques , technologies and keywords in italic. it is also applicable to all pages . ( we focus on the keywords , parameters or techniques , technologies)
+A caption for the literature survey tables and table should be center aligned. ( those contents in the table too). Also for each table provide continuous table names too. 
+Each slide should contain equal amount of contents. (if it feels that i page is fully packed , then you can create another page and add it there)
+Requirements specification also should highlight the sub points. ( points dont always needs to  be placed one per row , if space permits ,  we can fit 2 points in one row .
+Output Format should also highlight the important points.(the Key terms, not  the entire sentence ) 
+Don't write paragraphs give bullet points. ( already implemented , but check for its violations )
+Contents in  Every page should be justified 
+in the page 9 , last section , there are some alignment issues . the last lines content is gone outside the justification. fix it .
+after dot , comma and this ':' , try to provide a space (  for the whole document pages ).
+In the given two  tables for literature review , there are some contents structure related problems . 1) replace LSFS with Log-Structured File System . also remove "system" from this sentence "system (LSFS)High system overhead;OS-level integration is complex to de-ploy locally"
+from 18th page in the slide , from this sentence "Back End: e.g. Python 3.12 or higher" remove the "e.g" part . It is unwanted.
+From page 22 , in this sentence "Input: User-selected local folders containing document formats,
+image, audio, and video files; user search queries and natural
+language prompts for document retrieval."  remove this words "document formats" and replace it with "documents" .
+. apply these changes in the enitre project and give me the updated file so  that i can compile it in my PC .
+
+\item \textbf{Processor:} Intel\textsuperscript{\textregistered} Core i5 (8th Generation or later) / AMD Ryzen 5 or later   |    \item \textbf{Processor:} Intel\textsuperscript{\textregistered} Core\texttrademark\ i5 (8th Generation or later) / AMD Ryzen\texttrademark\ 5 (or later)  | these are the full names of processors (with the trademark ) . analyze the contents and update it in the project too .  Also if my project mentions that this project supports macOS , then remove it( it works only in linux and windoes ). Update it too  ."
+
+
+i got this file "reference.pdf" as the final product . which was the same as the one i gave it.
+
+the second message to claude  AI
+
+"look . i will tell you what  to do  . now the updated thing gave to  me is not a perfect and its having some problems. i will give you a pdf which is a presentation(  in the same format ). learn about it (  not the content, but  the style ). how and where the italic property is added , how the space is organized ( if a page is  full , then nothing wrong in adding one more page to fit it) , the proper justification(center aligned) for  all pages , if we can fit multiple points( not big , one word points, then you add one after  another in a row (with respect to the size and the justification ), also provide trademarks  as per the reference .  ALso provide table  names . Also not how  quotes are provided in the literature review .( and its distribution ) . also  make sure that all the contents in all page is justified ( and a professional style is  followed in every page) . Also i will give me some suggestions
+1)First page of introduction, last point , second line is not  visible .
+2) in 8th page , POSIX is outside the justification, also that page itself has justification problems .
+3) 9th page also have some problems .Last point second page (  one word is outside the justification)
+4) 2 tables in literature review , its structure and placement is wrong . footer is overlapped with table border and the table  name placement (  with respect to the reference)
+5) 16th page's justification is having some problems .
+6) In requirement specfications, Memory is another point, its current placement is wrong.
+7) regarding layout of "registered" and "trademark" signs, there are some changes. fix it too .  ( the code is given in the prev chat ).
+8) 20 th page is also not justified .
+Inorder to  provide proper justification and spacing , you can add some spaces between words to make it happen.
+also refer to the given document to  fetch where he added the style 'italic'  to  the words and keywords. (  initially when i said  it  to  you , you made it bold)
+So provide all the changes in the .zip file and use your brain to make it happen . ( i know you are brave) 
+\textit{}  | it is the code to provide italic style to  a word or sentence . Now continue your work
+
+one more thing i  wish to  tell you .  i  will give you an example . in my project we constantly use 'LLM's . but i forgot  to  mention the full form in the entire project . so  do one more thing. find the situations where we repeat these kinda situations , for the first time those are used , provide the full form only when first time its used then its short form along with its full form ( only for the first time. ) . Then from next time, we can make use of the short forms. (the example of  LLM is an example , it tells what to  do  the next time ) . please fix it too
+
+for "Operating System" keep it same in the whole page. (it is only for this keyword) . i also  believes that the major protocols and the requirements i asked you to care of ) while  implementing all these changes.
+
+"
+
+later i also asked him to do  one more editing that initially i asked him to make italic the contents like keywords and names of technologies or some short forms of tech / technology . but  it later made it Italic .
+
+But the irony is claude again gave me the same pdf i gave it to him.
+
+here is  your task. You have given the Latex file named "LaText_Project" which is my project for creating the presentation. file 'my_project.pdf' is my file and file 'reference.pdf' . compare it both so  that you will get an example on how to make my project  similar to refered project . Now help me to better my presentation . analyze my requirement and learn what i want and do it.
+
+
+Some more improvements
+
+1)  in 'Outline' , these headlines 'Input and Output' 'Conclusion' ,'References' are not included
+2) In pages 23,22,21,20 ,19 ,16 and 10 the content is  not fully justified .
+   in 10th page , only the first lines end is exeeding the justification. 
+   in 9th page , last point, second line which contains this word '/DOCX/' is outside the justification
+   
+add or remove spaces in between the words to fix the justification
+
+what iam saying is , in some pages , the justification is proper . But  in some pages , there is a miss-perfection in the justification. Fix it , as my sir is too much strict about it.
+
+
+'Conclusion' , 'References' if i wish to add two  points in the Outline page ( as two points )  how can i do it ? ( just tell me)
+
+Requirements Specification
+'Input And Output' , 'References'
+
