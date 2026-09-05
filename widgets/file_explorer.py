@@ -345,9 +345,18 @@ class FileExplorer(QWidget):
                        act_find_related, act_view_rels, act_suggest_org):
             act_b5.setEnabled(has_single_file)
 
-        # Batch 6 — Folder Intelligence (single folder only)
+        # Batch 6 — Folder Intelligence / Statistics
+        folder_target = ""
+        if targets:
+            if os.path.isdir(targets[0]):
+                folder_target = targets[0]
+            elif os.path.isfile(targets[0]):
+                folder_target = os.path.dirname(targets[0])
+        elif self.current_path and os.path.isdir(self.current_path):
+            folder_target = self.current_path
+
         act_folder_intel = menu.addAction("Folder Statistics…")
-        act_folder_intel.setEnabled(has_single_folder)
+        act_folder_intel.setEnabled(bool(folder_target and os.path.isdir(folder_target)))
 
         # Extension point: plugins may add their own context-menu actions.
         if False and self.plugin_registry is not None and targets:
@@ -362,8 +371,10 @@ class FileExplorer(QWidget):
             self.semantic_search_requested.emit()
             return
         elif action is act_folder_intel:
-            path = targets[0] if targets else self.current_path
-            if path:
+            path = folder_target or (targets[0] if targets else self.current_path)
+            if path and os.path.isfile(path):
+                path = os.path.dirname(path)
+            if path and os.path.isdir(path):
                 self.folder_intelligence_requested.emit(path)
             return
         elif action is act_folder_chat:
@@ -553,15 +564,17 @@ class FileExplorer(QWidget):
     def _properties(self, path: str | None) -> None:
         if not path or not os.path.exists(path):
             return
+        from core.file_stat_util import format_file_size
         fi = QFileInfo(path)
         size = fi.size()
         modified = fi.lastModified().toString()
         is_dir = fi.isDir()
+        size_str = format_file_size(size, include_exact=True) if not is_dir else "-"
         text = (
             f"Name: {fi.fileName()}\n"
             f"Path: {fi.absoluteFilePath()}\n"
             f"Type: {'Folder' if is_dir else 'File'}\n"
-            f"Size: {size} bytes\n"
+            f"Size: {size_str}\n"
             f"Modified: {modified}"
         )
         QMessageBox.information(self, "Properties", text)

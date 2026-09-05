@@ -20,6 +20,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -98,6 +99,37 @@ class FolderIntelligenceService:
                     if p == folder_path or p.startswith(prefix):
                         files_under.append(r)
                 if not files_under:
+                    if os.path.isdir(folder_path):
+                        dates = []
+                        total_size = 0
+                        for root, _, fnames in os.walk(folder_path):
+                            for fn in fnames:
+                                fp = os.path.join(root, fn)
+                                try:
+                                    st = os.stat(fp)
+                                    total_size += st.st_size
+                                    mtime = datetime.fromtimestamp(st.st_mtime)
+                                    dates.append((mtime, fp))
+                                except Exception:
+                                    pass
+                                ext = os.path.splitext(fn)[1].lower()
+                                info.extension_distribution[ext] = (
+                                    info.extension_distribution.get(ext, 0) + 1
+                                )
+                                modality = _MODALITY_BY_EXT.get(ext, "document")
+                                info.file_type_distribution[modality] = (
+                                    info.file_type_distribution.get(modality, 0) + 1
+                                )
+                        info.total_files = sum(info.extension_distribution.values())
+                        info.total_size = total_size
+                        if dates:
+                            info.newest_file = max(dates, key=lambda d: d[0])[1]
+                            info.oldest_file = min(dates, key=lambda d: d[0])[1]
+                            info.date_range = (
+                                f"{min(d for d, _ in dates).date()} → "
+                                f"{max(d for d, _ in dates).date()}"
+                            )
+                        info.unclassified_count = info.total_files
                     return info
 
                 info.total_files = len(files_under)

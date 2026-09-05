@@ -690,6 +690,21 @@ class Batch5Store:
             logger.error("Failed to clear duplicate suggestions for %s: %s", group_checksum, e)
             return 0
 
+    def clear_all_duplicate_suggestions(self) -> int:
+        """Delete all pending/dismissed duplicate removal suggestions."""
+        try:
+            with self._session_factory() as session:
+                count = (
+                    session.query(DuplicateSuggestion)
+                    .filter(DuplicateSuggestion.status.in_(["pending", "dismissed"]))
+                    .delete(synchronize_session=False)
+                )
+                session.commit()
+                return count or 0
+        except Exception as e:
+            logger.error("Failed to clear all duplicate suggestions: %s", e)
+            return 0
+
     @staticmethod
     def _dup_suggestion_info(row: DuplicateSuggestion) -> DuplicateRemovalSuggestion:
         evidence = {}

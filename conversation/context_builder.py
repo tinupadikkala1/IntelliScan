@@ -169,7 +169,15 @@ class MultiDocumentContextBuilder:
                 if remaining <= 0:
                     break
                 snippet = text[:remaining] if len(text) > remaining else text
-                block_parts.append(f"[{source or 'Source'}]\n{snippet}")
+                if not source or "caption" in source.lower():
+                    source_tag = "[Image Caption]"
+                elif "ocr" in source.lower():
+                    source_tag = "[OCR Text]"
+                elif "transcript" in source.lower():
+                    source_tag = "[Transcript]"
+                else:
+                    source_tag = f"[{source}]"
+                block_parts.append(f"{source_tag}\n{snippet}")
                 total += len(snippet)
             if len(block_parts) > 1:
                 block = "\n".join(block_parts)

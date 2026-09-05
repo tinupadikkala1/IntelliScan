@@ -194,6 +194,7 @@ class MainWindow(QMainWindow):
         self.menu.open_image_filter.connect(self._on_image_filter_requested)
         self.menu.open_organize_files.connect(self._on_organize_files_requested)
         self.menu.open_check_inactive.connect(self._on_check_inactive_requested)
+        self.menu.open_folder_statistics.connect(self._on_folder_statistics_menu_requested)
         self.menu.open_cleanup_db.connect(self._on_cleanup_db_requested)
 
 
@@ -815,24 +816,25 @@ class MainWindow(QMainWindow):
         self._active_ai_dialog = dialog
 
         dialog.run_analysis_requested.connect(
-            lambda level: self._run_ai_analysis(file_path, file_hash, level)
+            lambda level, model: self._run_ai_analysis(file_path, file_hash, level, model)
         )
         dialog.regenerate_requested.connect(
-            lambda level: self._on_ai_regenerate(level)
+            lambda level, model: self._on_ai_regenerate(level, model)
         )
         dialog.finished.connect(lambda _: setattr(self, "_active_ai_dialog", None))
         dialog.exec()
 
-    def _run_ai_analysis(self, file_path: str, file_hash: str, detail_level: str = "medium") -> None:
+    def _run_ai_analysis(self, file_path: str, file_hash: str, detail_level: str = "medium", model: str = "qwen-local:latest") -> None:
         """Run AI analysis in a background worker with progress dialog."""
         from PySide6.QtWidgets import QProgressDialog
         from PySide6.QtCore import Qt
 
+        model_display = "DeepSeek R1" if "deepseek" in (model or "").lower() else "Qwen Local"
         # Create progress dialog
         self._ai_progress = QProgressDialog(
-            "Starting AI analysis...", "Cancel", 0, 5, self
+            f"Starting AI analysis with {model_display}...", "Cancel", 0, 5, self
         )
-        self._ai_progress.setWindowTitle("AI Analysis")
+        self._ai_progress.setWindowTitle(f"AI Analysis — {model_display}")
         self._ai_progress.setWindowModality(Qt.WindowModal)
         self._ai_progress.setMinimumDuration(0)
         self._ai_progress.setValue(0)
@@ -846,6 +848,7 @@ class MainWindow(QMainWindow):
             file_path,
             file_hash,
             detail_level,
+            model,
             on_finished=self._ai_analysis_complete,
             on_progress=self._ai_analysis_progress,
             on_error=self._ai_analysis_error,
@@ -854,7 +857,7 @@ class MainWindow(QMainWindow):
         # Wire cancel button
         self._ai_progress.canceled.connect(self._cancel_ai_analysis)
 
-    def _perform_ai_analysis(self, progress_callback, cancel_event, file_path: str, file_hash: str, detail_level: str = "medium"):
+    def _perform_ai_analysis(self, progress_callback, cancel_event, file_path: str, file_hash: str, detail_level: str = "medium", model: str = "qwen-local:latest"):
         """Background worker: full AI analysis pipeline delegated to AnalysisManager."""
         from ai import AIService, AICacheManager
         from ai.analysis_manager import AnalysisManager
@@ -868,6 +871,7 @@ class MainWindow(QMainWindow):
             detail_level=detail_level,
             progress_callback=progress_callback,
             cancel_event=cancel_event,
+            model=model,
         )
 
     def _ai_analysis_progress(self, current: int, total: int) -> None:
@@ -921,7 +925,7 @@ class MainWindow(QMainWindow):
             self.container.tasks.cancel(self._ai_task_id)
             self.bus.status_message.emit("AI analysis cancelled")
 
-    def _on_ai_regenerate(self, detail_level: str) -> None:
+    def _on_ai_regenerate(self, detail_level: str, model: str = "qwen-local:latest") -> None:
         """Handle regenerate request from AI dialog."""
         file_path = getattr(self, '_ai_file_path', '')
         file_hash = getattr(self, '_ai_file_hash', '')
@@ -931,7 +935,7 @@ class MainWindow(QMainWindow):
                 from ai.cache_manager import AICacheManager
                 cache = AICacheManager(self.container.db.session)
                 cache.delete_analysis(file_hash)
-                self._run_ai_analysis(file_path, file_hash, detail_level)
+                self._run_ai_analysis(file_path, file_hash, detail_level, model)
             except Exception as e:
                 self.log.error("Error regenerating analysis: %s", e)
 
@@ -1297,19 +1301,19 @@ class MainWindow(QMainWindow):
 
         dialog = AskAIDialog(file_path, parent=self)
         dialog.question_submitted.connect(
-            lambda question, fp: self._perform_ask_ai(question, fp, dialog)
+            lambda question, fp, model: self._perform_ask_ai(question, fp, dialog, model)
         )
         dialog.citation_activated.connect(self._on_file_activated)
         dialog.show()
 
-    def _perform_ask_ai(self, question: str, file_path: str, dialog) -> None:
+    def _perform_ask_ai(self, question: str, file_path: str, dialog, model: str = "qwen-local:latest") -> None:
         """Run direct full-file AI query (Tier 1) in a background thread."""
-        self.log.info("Ask AI (direct): '%s' about '%s'", question[:50], file_path)
-        self.bus.status_message.emit(f"Ask AI: reading file & thinking...")
+        self.log.info("Ask AI (direct): '%s' about '%s' [model=%s]", question[:50], file_path, model)
+        self.bus.status_message.emit(f"Ask AI: reading file & thinking ({model})...")
 
-        def _do_ask(progress_callback, cancel_event, q, fp):
+        def _do_ask(progress_callback, cancel_event, q, fp, m):
             rag = self.container.rag_engine
-            response = rag.ask_file_direct(question=q, file_path=fp)
+            response = rag.ask_file_direct(question=q, file_path=fp, model=m)
             return response
 
         def _on_complete(response):
@@ -1347,6 +1351,7 @@ class MainWindow(QMainWindow):
             None,
             question,
             file_path,
+            model,
             on_finished=_on_complete,
             on_error=_on_error,
         )
@@ -1533,11 +1538,8 @@ class MainWindow(QMainWindow):
         self._open_chat_dialog("folder", os.path.abspath(folder_path))
 
     def _on_workspace_chat_requested(self) -> None:
-        """Open a Workspace Chat across the current folder / workspace."""
-        if hasattr(self, "current_folder") and self.current_folder and os.path.isdir(self.current_folder):
-            self._open_chat_dialog("folder", os.path.abspath(self.current_folder))
-        else:
-            self._open_chat_dialog("workspace", "")
+        """Open a Workspace Chat across the entire indexed workspace."""
+        self._open_chat_dialog("workspace", "")
 
 
     def _on_conversation_history_requested(self) -> None:
@@ -1602,10 +1604,13 @@ class MainWindow(QMainWindow):
         """Open a chat dialog for a scope, resuming a conversation if given."""
         from ui.dialogs.chat_dialog import ChatDialog
 
-        active_folder = getattr(self, "current_path", None) or getattr(self, "current_folder", None)
-        if (not scope_path or scope_type == "workspace") and active_folder and os.path.isdir(active_folder):
-            scope_type = "folder"
-            scope_path = os.path.abspath(active_folder)
+        if scope_type == "folder" and not scope_path:
+            active_folder = getattr(self, "current_path", None) or getattr(self, "current_folder", None)
+            if active_folder and os.path.isdir(active_folder):
+                scope_path = os.path.abspath(active_folder)
+            else:
+                scope_type = "workspace"
+                scope_path = ""
 
         dialog = ChatDialog(scope_type=scope_type, scope_path=scope_path, parent=self)
         dialog.send_requested.connect(
@@ -1889,7 +1894,22 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         dialog.compare_requested.connect(self._open_file_comparison)
+        dialog.refresh_requested.connect(lambda: self._scan_duplicates(dialog, folder_path))
+        dialog.clear_requested.connect(self._on_duplicate_clear_requested)
         dialog.show()
+        self._scan_duplicates(dialog, folder_path)
+
+    def _on_duplicate_clear_requested(self) -> None:
+        """Clear all stored duplicate suggestions and notify user."""
+        try:
+            self.container.suggestion_engine.clear_all_duplicate_suggestions()
+        except Exception as exc:
+            self.log.debug("Failed to clear duplicate suggestions from store: %s", exc)
+        self.bus.status_message.emit("Old duplicate scan results deleted. Ready to scan again.")
+
+    def _scan_duplicates(self, dialog, folder_path: Optional[str] = None) -> None:
+        """Run exact and near-duplicate scan in background task."""
+        dialog.set_loading(True)
 
         def _do_scan(progress_callback, cancel_event):
             exact_groups = self.container.duplicate_engine.find_exact_duplicates(folder_path=folder_path)
@@ -1898,7 +1918,7 @@ class MainWindow(QMainWindow):
                 near_groups = self.container.duplicate_engine.find_near_duplicates(
                     similarity_service=self.container.similarity_service,
                     folder_path=folder_path,
-                    threshold=0.70,
+                    threshold=0.80,
                 )
             except Exception as exc:
                 self.log.debug("Near duplicate scan skipped: %s", exc)
@@ -1945,8 +1965,25 @@ class MainWindow(QMainWindow):
 
         group = self.container.duplicate_engine.find_exact_duplicates_for_file(file_path)
         groups = [group] if group else []
+        try:
+            similars = self.container.similarity_service.near_duplicates(file_path)
+            for s in similars:
+                if s.file_path and os.path.exists(s.file_path) and s.file_path != file_path:
+                    sim_pct = int(round(s.score * 100))
+                    g = DuplicateGroup(
+                        checksum=f"near_{sim_pct}_{file_path}",
+                        files=[file_path, s.file_path],
+                        total_size=(
+                            os.path.getsize(file_path)
+                            + (os.path.getsize(s.file_path) if os.path.isfile(s.file_path) else 0)
+                        ),
+                    )
+                    groups.append(g)
+        except Exception as exc:
+            self.log.debug("Near duplicate check for file skipped: %s", exc)
+
         suggestions = []
-        if group:
+        if groups:
             try:
                 suggestions = self.container.suggestion_engine.suggest_duplicate_removals(groups)
             except Exception as exc:
@@ -1962,6 +1999,8 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         dialog.compare_requested.connect(self._open_file_comparison)
+        dialog.refresh_requested.connect(lambda: self._on_find_duplicates_requested(file_path))
+        dialog.clear_requested.connect(self._on_duplicate_clear_requested)
         dialog.show()
 
     # ------------------------------------------------------------------ #
@@ -2296,6 +2335,11 @@ class MainWindow(QMainWindow):
             self.bus.collection_updated,
             self.bus.saved_search_updated,
             self.bus.organization_suggestion_updated,
+            self.bus.dashboard_refresh_requested,
+            self.bus.caption_updated,
+            self.bus.folder_classification_updated,
+            self.bus.metadata_updated,
+            self.bus.rename_completed,
         ):
             sig.connect(dialog.refresh)
         dialog.show()
@@ -2378,8 +2422,27 @@ class MainWindow(QMainWindow):
         )
 
     # ------------------------------------------------------------------ #
-    # B6-02 — AI Folder Classification
+    # B6-02 — AI Folder Classification & Statistics
     # ------------------------------------------------------------------ #
+    def _on_folder_statistics_menu_requested(self) -> None:
+        """Open Folder Statistics for selected folder, current path, or prompt."""
+        folder = None
+        if hasattr(self, "explorer"):
+            selected = self.explorer._selected_paths()
+            if selected:
+                sel = selected[0]
+                if os.path.isdir(sel):
+                    folder = sel
+                elif os.path.isfile(sel):
+                    folder = os.path.dirname(sel)
+        if not folder and hasattr(self, "current_path") and self.current_path and os.path.isdir(self.current_path):
+            folder = self.current_path
+        if not folder or not os.path.isdir(folder):
+            from PySide6.QtWidgets import QFileDialog
+            folder = QFileDialog.getExistingDirectory(self, "Select Folder for Statistics", os.path.expanduser("~"))
+        if folder and os.path.isdir(folder):
+            self._on_folder_intelligence_requested(folder)
+
     def _on_folder_intelligence_requested(self, folder_path: str) -> None:
         """Right-click folder → Folder Intelligence… (B6-02 + B7 completion)."""
         from ui.dialogs.folder_intelligence_dialog import FolderIntelligenceDialog
@@ -2401,6 +2464,7 @@ class MainWindow(QMainWindow):
             self.log.debug("Folder intelligence services unavailable: %s", exc)
         dialog.refresh()
         dialog.show()
+        self._folder_intelligence_dialog = dialog
         self.bus.folder_classification_updated.emit(folder_path)
 
     # ------------------------------------------------------------------ #

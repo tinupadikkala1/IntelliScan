@@ -45,11 +45,12 @@ class OllamaClient:
             self.timeout,
         )
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str, model: Optional[str] = None) -> str:
         """Generate a response from the Ollama model.
 
         Args:
             prompt: The text prompt to send to the model.
+            model: Optional model name to override default self.model.
 
         Returns:
             The raw response text from Ollama.
@@ -59,9 +60,10 @@ class OllamaClient:
             TimeoutError: If the request exceeds the timeout.
             RuntimeError: If the API returns a non-200 status code.
         """
+        target_model = model or self.model
         url = f"{self.base_url}/api/chat"
         payload = {
-            "model": self.model,
+            "model": target_model,
             "messages": [
                 {
                     "role": "system",
@@ -81,7 +83,7 @@ class OllamaClient:
             },
         }
 
-        logger.info("Starting chat generation request to %s (model=%s)", url, self.model)
+        logger.info("Starting chat generation request to %s (model=%s)", url, target_model)
 
         try:
             response = requests.post(url, json=payload, timeout=self.timeout)

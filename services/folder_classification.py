@@ -105,6 +105,10 @@ class FolderClassificationService:
                         files_under.append(path)
                         if r.checksum:
                             path_hashes[path] = r.checksum
+                if not files_under and os.path.isdir(folder_path):
+                    for root, _, fnames in os.walk(folder_path):
+                        for fn in fnames:
+                            files_under.append(os.path.join(root, fn))
                 if not files_under:
                     return FolderClassificationInfo(
                         folder_path=folder_path,

@@ -37,6 +37,8 @@ class DuplicateDialog(QDialog):
     show_in_folder_requested = Signal(str)
     compare_requested = Signal(str, str)  # (file_a, file_b)
     removal_changed = Signal()
+    refresh_requested = Signal()
+    clear_requested = Signal()
 
     def __init__(
         self,
@@ -80,7 +82,12 @@ class DuplicateDialog(QDialog):
         self.summary_label.setStyleSheet("font-weight: bold; padding: 4px;")
         header.addWidget(self.summary_label)
         header.addStretch(1)
-        self.refresh_btn = QPushButton("Refresh")
+        self.clear_btn = QPushButton("Delete Old Results")
+        self.clear_btn.setToolTip("Delete and clear old scan results so you can scan again")
+        self.clear_btn.clicked.connect(self._on_clear_clicked)
+        header.addWidget(self.clear_btn)
+        self.refresh_btn = QPushButton("Scan Again")
+        self.refresh_btn.setToolTip("Scan folder again for duplicate files")
         self.refresh_btn.clicked.connect(self.refresh)
         header.addWidget(self.refresh_btn)
         layout.addLayout(header)
@@ -135,11 +142,14 @@ class DuplicateDialog(QDialog):
         self.folder_btn.clicked.connect(self._on_show_folder_clicked)
         self.copy_btn = QPushButton("Copy path")
         self.copy_btn.clicked.connect(self._on_copy_path_clicked)
+        self.compare_btn = QPushButton("Compare")
+        self.compare_btn.clicked.connect(self._on_compare_clicked)
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.accept)
         actions.addWidget(self.open_btn)
         actions.addWidget(self.folder_btn)
         actions.addWidget(self.copy_btn)
+        actions.addWidget(self.compare_btn)
         actions.addStretch(1)
         actions.addWidget(close_btn)
         layout.addLayout(actions)
@@ -147,6 +157,7 @@ class DuplicateDialog(QDialog):
         self.open_btn.setEnabled(False)
         self.folder_btn.setEnabled(False)
         self.copy_btn.setEnabled(False)
+        self.compare_btn.setEnabled(False)
 
 
     # ------------------------------------------------------------------ #
@@ -166,9 +177,33 @@ class DuplicateDialog(QDialog):
             self.open_btn.setEnabled(False)
             self.folder_btn.setEnabled(False)
             self.copy_btn.setEnabled(False)
+            self.compare_btn.setEnabled(False)
+            self.clear_btn.setEnabled(False)
             self.refresh_btn.setEnabled(False)
         else:
             self.refresh_btn.setEnabled(True)
+            self.clear_btn.setEnabled(bool(self._groups))
+
+    def _on_clear_clicked(self) -> None:
+        """Clear old scan results from dialog and emit clear_requested."""
+        self._groups = []
+        self._removal_suggestions = []
+        self._current_group = None
+        self._current_removal = None
+        self.group_list.clear()
+        self.files_list.clear()
+        self.open_btn.setEnabled(False)
+        self.folder_btn.setEnabled(False)
+        self.copy_btn.setEnabled(False)
+        self.compare_btn.setEnabled(False)
+        self.accept_removal_btn.setEnabled(False)
+        self.dismiss_removal_btn.setEnabled(False)
+        self.clear_btn.setEnabled(False)
+        self.summary_label.setText("Scan results deleted.")
+        self.suggestion_box.setText(
+            "Old scanning results have been deleted. Click 'Scan Again' to scan the folder again."
+        )
+        self.clear_requested.emit()
 
     def set_results(
         self,
@@ -187,8 +222,11 @@ class DuplicateDialog(QDialog):
             self.summary_label.setText("No duplicate files found.")
             self.group_list.clear()
             self.files_list.clear()
+            self.compare_btn.setEnabled(False)
+            self.clear_btn.setEnabled(False)
             return
 
+        self.clear_btn.setEnabled(True)
         empty_count = sum(1 for g in self._groups if g.is_empty)
         self.summary_label.setText(
             f"{len(self._groups)} duplicate group(s) · "
@@ -231,6 +269,7 @@ class DuplicateDialog(QDialog):
         self.open_btn.setEnabled(has_file)
         self.folder_btn.setEnabled(has_file)
         self.copy_btn.setEnabled(has_file)
+        self.compare_btn.setEnabled(len(group.files) >= 2)
         self._show_removal_suggestion(group)
         # Keep the group list highlight in sync.
         for i in range(self.group_list.count()):
@@ -300,6 +339,9 @@ class DuplicateDialog(QDialog):
             )
             self.accept_removal_btn.setEnabled(False)
             self.dismiss_removal_btn.setEnabled(False)
+            if self._current_group and suggestion.remove_path in self._current_group.files:
+                self._current_group.files.remove(suggestion.remove_path)
+                self._select_group(self._current_group)
             self.removal_changed.emit()
             self.refresh()
         else:
@@ -326,6 +368,7 @@ class DuplicateDialog(QDialog):
 
     def refresh(self) -> None:
         """Re-query duplicate groups (data may have changed)."""
+        self.refresh_requested.emit()
         self._populate()
 
     # ------------------------------------------------------------------ #

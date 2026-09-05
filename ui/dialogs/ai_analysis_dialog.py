@@ -35,8 +35,8 @@ class AIAnalysisDialog(QDialog):
     regenerating results at different detail levels.
     """
 
-    regenerate_requested = Signal(str)  # detail_level
-    run_analysis_requested = Signal(str)  # detail_level
+    regenerate_requested = Signal(str, str)  # detail_level, model_id
+    run_analysis_requested = Signal(str, str)  # detail_level, model_id
 
     def __init__(self, analysis: Optional[dict], file_name: str = "", parent=None) -> None:
         """Initialize the AI Analysis Dialog.
@@ -53,7 +53,7 @@ class AIAnalysisDialog(QDialog):
         self._file_name = file_name
 
         self.setWindowTitle(f"AI Analysis — {file_name}" if file_name else "AI Analysis")
-        self.setMinimumSize(560, 520)
+        self.setMinimumSize(600, 540)
         self.setModal(True)
 
         self._setup_ui()
@@ -69,19 +69,27 @@ class AIAnalysisDialog(QDialog):
             header.setStyleSheet("font-size: 14px; padding: 4px;")
             layout.addWidget(header)
 
-        # Detail Level Selector & Action Header
+        # Detail Level & Model Selector Header
         options_group = QGroupBox("Analysis Settings")
         options_layout = QHBoxLayout(options_group)
 
-        options_layout.addWidget(QLabel("Detail Level:"))
+        options_layout.addWidget(QLabel("Detail:"))
         self.detail_level_combo = QComboBox()
         self.detail_level_combo.addItems([
-            "Low (quick, brief summary)",
-            "Medium (balanced detail)",
-            "High (comprehensive, detailed)"
+            "Low (quick)",
+            "Medium (balanced)",
+            "High (detailed)"
         ])
         self.detail_level_combo.setCurrentIndex(1)  # default to Medium
-        options_layout.addWidget(self.detail_level_combo, 1)
+        options_layout.addWidget(self.detail_level_combo)
+
+        options_layout.addWidget(QLabel("Model:"))
+        self.model_combo = QComboBox()
+        self.model_combo.addItem("⚡ Qwen Local", "qwen-local:latest")
+        self.model_combo.addItem("🧠 DeepSeek R1 (1.5B)", "deepseek-r1-1.5b:latest")
+        self.model_combo.setCurrentIndex(0)
+        self.model_combo.setToolTip("Select reasoning model for document analysis")
+        options_layout.addWidget(self.model_combo, 1)
 
         layout.addWidget(options_group)
 
@@ -233,13 +241,17 @@ class AIAnalysisDialog(QDialog):
             return "high"
         return "medium"
 
+    def _get_selected_model(self) -> str:
+        """Helper to get selected model ID."""
+        return self.model_combo.currentData() or "qwen-local:latest"
+
     def _on_run_analysis(self) -> None:
         """Handle 'Run Analysis' button click."""
-        self.run_analysis_requested.emit(self._get_selected_level())
+        self.run_analysis_requested.emit(self._get_selected_level(), self._get_selected_model())
 
     def _on_regenerate(self) -> None:
         """Handle 'Regenerate' button click."""
-        self.regenerate_requested.emit(self._get_selected_level())
+        self.regenerate_requested.emit(self._get_selected_level(), self._get_selected_model())
 
     def update_analysis(self, analysis: dict) -> None:
         """Update the displayed analysis with new data."""

@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QSpinBox,
     QSplitter,
     QTextEdit,
     QVBoxLayout,
@@ -77,6 +78,17 @@ class GraphDialog(QDialog):
         refresh_btn.clicked.connect(self.refresh)
         toolbar.addWidget(refresh_btn)
 
+        toolbar.addSpacing(10)
+        toolbar.addWidget(QLabel("Min Match:"))
+        self.threshold_spin = QSpinBox()
+        self.threshold_spin.setRange(40, 100)
+        self.threshold_spin.setSingleStep(5)
+        self.threshold_spin.setValue(40)
+        self.threshold_spin.setSuffix("%")
+        self.threshold_spin.setToolTip("Minimum relationship percentage to form a connection (minimum 40%)")
+        self.threshold_spin.valueChanged.connect(self.refresh)
+        toolbar.addWidget(self.threshold_spin)
+
         self.stats_label = QLabel("")
         self.stats_label.setStyleSheet("color: #64748b; font-weight: bold; padding-left: 10px;")
         toolbar.addWidget(self.stats_label)
@@ -128,7 +140,7 @@ class GraphDialog(QDialog):
 
     # ------------------------------------------------------------------ #
     def refresh(self) -> None:
-        """Build and render the file-centric relationship graph."""
+        """Build and render the file-centric or entity relationship graph."""
         self.search_input.blockSignals(True)
         self.search_input.clear()
         self.search_input.blockSignals(False)
@@ -138,24 +150,63 @@ class GraphDialog(QDialog):
             folder = getattr(self.parent(), "current_path", "")
         if not folder and hasattr(self.parent(), "current_folder"):
             folder = getattr(self.parent(), "current_folder", "")
+
         if not folder:
-            import os
-            folder = os.getcwd()
+            stats = self._query.stats() if self._query else {"entities": 0, "relationships": 0}
+            self._entities = self._query.search_entities("", limit=200) if self._query else []
+            self._relationships = []
+            self.canvas.set_graph(self._entities, self._relationships)
+            self.stats_label.setText(
+                f"{stats.get('entities', 0)} entities · {stats.get('relationships', 0)} relationships"
+            )
+            if self._entities:
+                self._select_entity(self._entities[0]["id"])
+            else:
+                self.details_text.setPlainText("No entities in graph.")
+            return
 
         evidence_map = getattr(self._retrieval, "_evidence", {}) if self._retrieval else {}
-        graph_data = FileGraphBuilder.build_file_graph(folder, evidence_map=evidence_map)
+        min_pct = self.threshold_spin.value() if hasattr(self, "threshold_spin") else 40
+        graph_data = FileGraphBuilder.build_file_graph(
+            folder, evidence_map=evidence_map, min_percentage=min_pct
+        )
 
         self._entities = graph_data.get("entities", [])
         self._relationships = graph_data.get("relationships", [])
 
         self.canvas.set_graph(self._entities, self._relationships)
         self.stats_label.setText(
-            f"{len(self._entities)} files · {len(self._relationships)} relationship edges"
+            f"{len(self._entities)} files · {len(self._relationships)} relationships (≥ {min_pct}%)"
         )
         if self._entities:
             self._on_entity_selected(self._entities[0])
         else:
             self.details_text.setPlainText("No files found in the active directory.")
+
+    def _select_entity(self, entity_or_id) -> None:
+        if isinstance(entity_or_id, dict):
+            self._on_entity_selected(entity_or_id)
+            return
+
+        entity_id = entity_or_id
+        if self._query:
+            detail = self._query.entity_details(entity_id)
+            if detail:
+                details = [
+                    f"Entity: {detail.name}",
+                    f"Type: {detail.entity_type}",
+                    f"Aliases: {', '.join(detail.aliases) if detail.aliases else 'None'}",
+                ]
+                self.details_text.setPlainText("\n".join(details))
+                self.relationships_list.clear()
+                for r in detail.relationships:
+                    item = QListWidgetItem(f"{r.get('source')} -> {r.get('relation')} -> {r.get('target')}")
+                    self.relationships_list.addItem(item)
+                self.evidence_list.clear()
+                for rf in detail.related_files:
+                    item = QListWidgetItem(f"📄 {os.path.basename(rf)}")
+                    item.setData(Qt.UserRole, {"evidence": {"file_path": rf, "source_index": 0}})
+                    self.evidence_list.addItem(item)
 
 
     # ------------------------------------------------------------------ #

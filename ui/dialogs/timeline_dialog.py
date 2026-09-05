@@ -55,6 +55,16 @@ class TimelineDialog(QDialog):
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
 
+        info_label = QLabel(
+            "Track chronological file activity: "
+            "<b>Created</b> (filesystem birth date), "
+            "<b>Modified</b> (content saved), and "
+            "<b>Opened</b> (accessed)."
+        )
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("color: #666; font-size: 11px; margin-bottom: 4px;")
+        layout.addWidget(info_label)
+
         filters = QFormLayout()
         self.days_spin = QSpinBox()
         self.days_spin.setRange(1, 365)
@@ -72,6 +82,7 @@ class TimelineDialog(QDialog):
         layout.addLayout(filters)
 
         self.summary_label = QLabel("")
+        self.summary_label.setStyleSheet("font-weight: bold; margin-top: 4px;")
         layout.addWidget(self.summary_label)
 
         self.list_widget = QListWidget()
@@ -80,13 +91,32 @@ class TimelineDialog(QDialog):
 
         actions = QHBoxLayout()
         refresh_btn = QPushButton("🔄 Refresh")
+        refresh_btn.setToolTip("Refresh timeline events from database and filesystem")
         refresh_btn.clicked.connect(self.refresh)
-        self.export_btn = QPushButton("💾 Export Timeline...")
-        self.export_btn.clicked.connect(self._on_export)
+
+        self.export_csv_btn = QPushButton("📄 Export CSV")
+        self.export_csv_btn.setToolTip("Export current timeline events to a CSV spreadsheet (.csv)")
+        self.export_csv_btn.clicked.connect(lambda: self._on_export(format_hint="csv"))
+
+        self.export_json_btn = QPushButton("📋 Export JSON")
+        self.export_json_btn.setToolTip("Export current timeline events to structured JSON (.json)")
+        self.export_json_btn.clicked.connect(lambda: self._on_export(format_hint="json"))
+
+        self.export_btn = QPushButton("💾 Export...")
+        self.export_btn.setToolTip("Export timeline to CSV or JSON file")
+        self.export_btn.clicked.connect(lambda: self._on_export())
+
+        self.clear_btn = QPushButton("🗑️ Clear Opened")
+        self.clear_btn.setToolTip("Clear recorded 'Opened' events history")
+        self.clear_btn.clicked.connect(self._on_clear_history)
+
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.accept)
+
         actions.addWidget(refresh_btn)
-        actions.addWidget(self.export_btn)
+        actions.addWidget(self.export_csv_btn)
+        actions.addWidget(self.export_json_btn)
+        actions.addWidget(self.clear_btn)
         actions.addStretch(1)
         actions.addWidget(close_btn)
         layout.addLayout(actions)
@@ -123,10 +153,10 @@ class TimelineDialog(QDialog):
                 text = f"[{ev['kind']}] {time_str}  {ev['filename']}"
                 item = QListWidgetItem(text)
                 item.setData(Qt.UserRole, ev["path"])
-                item.setToolTip(ev["path"])
+                item.setToolTip(f"{ev['path']}\nType: {ev['kind'].capitalize()}\nTime: {ev['time']}")
                 self.list_widget.addItem(item)
 
-    def _on_export(self) -> None:
+    def _on_export(self, format_hint: Optional[str] = None) -> None:
         from PySide6.QtWidgets import QFileDialog, QMessageBox
 
         groups = getattr(self, "_current_groups", [])
@@ -134,19 +164,27 @@ class TimelineDialog(QDialog):
             QMessageBox.information(self, "Export Timeline", "No timeline activity events to export.")
             return
 
-        default_name = "timeline_export.csv"
-        if self._folder:
-            default_name = f"{os.path.basename(self._folder)}_timeline.csv"
-        default_path = os.path.join(os.path.expanduser("~"), default_name)
+        is_json = format_hint == "json"
+        base_name = f"{os.path.basename(self._folder)}_timeline" if self._folder else "timeline_export"
+        default_ext = ".json" if is_json else ".csv"
+        default_path = os.path.join(os.path.expanduser("~"), f"{base_name}{default_ext}")
 
-        file_path, _ = QFileDialog.getSaveFileName(
+        filter_str = "JSON Files (*.json);;CSV Files (*.csv)" if is_json else "CSV Files (*.csv);;JSON Files (*.json)"
+
+        file_path, selected_filter = QFileDialog.getSaveFileName(
             self,
             "Export Timeline Activity",
             default_path,
-            "CSV Files (*.csv);;JSON Files (*.json)",
+            filter_str,
         )
         if not file_path:
             return
+
+        # Ensure correct extension based on selection
+        if "JSON" in selected_filter and not file_path.lower().endswith(".json"):
+            file_path += ".json"
+        elif "CSV" in selected_filter and not file_path.lower().endswith(".csv"):
+            file_path += ".csv"
 
         try:
             success = self._service.export_timeline(groups, file_path)
@@ -160,6 +198,28 @@ class TimelineDialog(QDialog):
                 QMessageBox.warning(self, "Export Failed", "Could not write timeline export file.")
         except Exception as exc:
             QMessageBox.critical(self, "Export Error", f"Failed to export timeline: {exc}")
+
+    def _on_clear_history(self) -> None:
+        from PySide6.QtWidgets import QMessageBox
+
+        confirm = QMessageBox.question(
+            self,
+            "Clear Opened History",
+            "Are you sure you want to clear recorded 'Opened' events history?\n"
+            "This will remove stale or recorded file access entries.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+
+        deleted = self._service.clear_opened_history(self._folder)
+        QMessageBox.information(
+            self,
+            "History Cleared",
+            f"Cleared {deleted} recorded 'Opened' history entries.",
+        )
+        self.refresh()
 
     # ------------------------------------------------------------------ #
     def _on_open(self, item: QListWidgetItem) -> None:

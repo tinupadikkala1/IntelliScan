@@ -656,6 +656,22 @@ class TestDashboard:
             service = DashboardService(session_factory=sf)
             assert service.ai_stats()["analyzed"] == 0
 
+    def test_refresh_method(self, tmp_path):
+        """DashboardService.refresh re-queries and returns a fresh snapshot."""
+        from services.dashboard_service import DashboardService
+        f = tmp_path / "valid.txt"
+        f.write_text("sample content")
+        with _db_session_factory(tmp_path) as sf:
+            with sf() as s:
+                _indexed_record(s, str(f), "v" * 64, ext=".txt")
+                s.commit()
+            service = DashboardService(session_factory=sf)
+            snap = service.refresh()
+            assert "files" in snap
+            assert "ai" in snap
+            assert "semantic" in snap
+            assert snap["files"]["total"] == 1
+
 
 # ================================================================
 # Deletion cleanup orchestration (Batch 5 §3.1)
@@ -800,6 +816,13 @@ class TestBatch5UI:
             qtbot.addWidget(dlg)
             dlg.show()
             assert "0 indexed" in dlg.files_box.layout().itemAt(0).widget().text()
+            assert hasattr(dlg, "refresh_btn")
+            assert "Last updated:" in dlg.last_updated_label.text()
+
+            # Click refresh button and verify it stays responsive
+            dlg.refresh_btn.click()
+            assert dlg.refresh_btn.isEnabled()
+            assert "Last updated:" in dlg.last_updated_label.text()
 
     def test_semantic_search_save_flow(self, qapp, qtbot, tmp_path):
         """Save Search inside the semantic search dialog persists via manager."""

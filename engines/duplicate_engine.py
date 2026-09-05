@@ -171,7 +171,7 @@ class DuplicateEngine:
         self,
         similarity_service=None,
         folder_path: Optional[str] = None,
-        threshold: float = 0.70,
+        threshold: float = 0.80,
     ) -> List[DuplicateGroup]:
         """Find near-duplicate files based on content & vector similarity.
 
@@ -184,15 +184,29 @@ class DuplicateEngine:
             from services.sqlite_indexer import IndexedFile
 
             with self._session_factory() as session:
-                rows = session.query(IndexedFile.absolute_path).all()
+                rows = session.query(IndexedFile.checksum, IndexedFile.absolute_path).all()
 
             def _is_valid_path(p: str) -> bool:
                 if not p or not isinstance(p, str):
                     return False
                 return os.path.exists(p) or "pytest" in p or "test_" in p or "/tmp/" in p
 
-            paths = [r[0] for r in rows if r[0] and _is_valid_path(r[0])]
+            # Pre-compute exact duplicate pairs so we never duplicate exact groups as near duplicates
+            exact_pairs = set()
+            checksum_map: Dict[str, List[str]] = {}
+            for c, p in rows:
+                if c and len(c) == 64 and p:
+                    checksum_map.setdefault(c, []).append(p)
+            for c, f_list in checksum_map.items():
+                if len(f_list) >= 2:
+                    for i in range(len(f_list)):
+                        for j in range(i + 1, len(f_list)):
+                            exact_pairs.add(tuple(sorted([f_list[i], f_list[j]])))
 
+            paths = [r[1] for r in rows if r[1] and _is_valid_path(r[1])]
+
+            abs_folder = None
+            norm_folder = None
             if folder_path:
                 abs_folder = os.path.abspath(folder_path).rstrip(os.sep)
                 norm_folder = abs_folder + os.sep
@@ -213,10 +227,14 @@ class DuplicateEngine:
                         if item.score >= threshold and not item.is_exact:
                             if not item.file_path or not os.path.exists(item.file_path):
                                 continue
+                            if folder_path:
+                                abs_other = os.path.abspath(item.file_path)
+                                if abs_other != abs_folder and not abs_other.startswith(norm_folder):
+                                    continue
                             pair_key = tuple(sorted([path, item.file_path]))
-                            if not all(os.path.exists(p) for p in pair_key):
+                            if pair_key in exact_pairs or pair_key in seen_pairs:
                                 continue
-                            if pair_key in seen_pairs:
+                            if not all(os.path.exists(p) for p in pair_key):
                                 continue
                             seen_pairs.add(pair_key)
                             sim_pct = int(round(item.score * 100))
@@ -233,6 +251,15 @@ class DuplicateEngine:
                 except Exception as exc:
                     logger.debug("Near duplicate check failed for %s: %s", path, exc)
 
+            # Sort near duplicate groups by similarity percentage descending
+            def _sim_score(grp: DuplicateGroup) -> int:
+                parts = grp.checksum.split("_")
+                try:
+                    return int(parts[1])
+                except Exception:
+                    return 0
+
+            near_groups.sort(key=_sim_score, reverse=True)
             return near_groups
         except Exception as exc:
             logger.error("Near duplicate detection failed: %s", exc)

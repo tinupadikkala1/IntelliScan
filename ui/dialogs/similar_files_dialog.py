@@ -118,7 +118,7 @@ class SimilarFilesDialog(QDialog):
 
         for r in self._similar:
             pct = int(round(r.score * 100))
-            bucket = f"Near Duplicate: {pct}% Match" if pct >= 85 else f"Similar: {pct}% Match"
+            bucket = f"Very Similar (Near Duplicate: {pct}% Match)" if pct >= 85 else f"Similar: {pct}% Match"
             tag_badge = "🔥 HIGH SIMILARITY" if pct >= 85 else "✨ MATCH"
             label = (
                 f"🔁 [{bucket}] {os.path.basename(r.file_path)}\n"

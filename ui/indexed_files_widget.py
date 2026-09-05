@@ -189,14 +189,8 @@ class IndexedFilesWidget(QWidget):
 
     def _get_file_size(self, size_bytes: int) -> str:
         """Format file size in human readable format."""
-        if size_bytes < 1024:
-            return f"{size_bytes} B"
-        elif size_bytes < 1024 * 1024:
-            return f"{size_bytes / 1024:.1f} KB"
-        elif size_bytes < 1024 * 1024 * 1024:
-            return f"{size_bytes / (1024 * 1024):.1f} MB"
-        else:
-            return f"{size_bytes / (1024 * 1024 * 1024):.1f} GB"
+        from core.file_stat_util import format_file_size
+        return format_file_size(size_bytes)
 
     def _update_status(self, count: int):
         """Update status label with item count."""

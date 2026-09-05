@@ -93,7 +93,8 @@ class MetadataExtractor:
                 pass
 
         # Timestamps
-        created_date = datetime.fromtimestamp(stat.st_ctime)
+        from core.file_stat_util import get_file_creation_date
+        created_date = get_file_creation_date(absolute_path) or datetime.fromtimestamp(stat.st_ctime)
         modified_date = datetime.fromtimestamp(stat.st_mtime)
 
         # Checksum (only for files)

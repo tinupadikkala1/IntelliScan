@@ -270,10 +270,33 @@ class AIFolderIndexer:
             # Documents and any remaining supported text
             return self._index_document(file_path)
 
+    def _get_user_metadata_chunk(self, file_path: str, file_hash: str) -> Optional[EvidenceChunk]:
+        if not self._db_store or not hasattr(self._db_store, "_session_factory"):
+            return None
+        try:
+            import json
+            from services.metadata_editor_service import build_user_metadata_chunk
+            from services.sqlite_indexer import IndexedFile
+            with self._db_store._session_factory() as session:
+                row = session.query(IndexedFile).filter_by(
+                    absolute_path=os.path.abspath(file_path)
+                ).first()
+                if row and row.user_metadata_json:
+                    data = json.loads(row.user_metadata_json)
+                    return build_user_metadata_chunk(
+                        file_path, data, file_hash=file_hash or row.checksum or ""
+                    )
+        except Exception as exc:
+            logger.debug("Failed to get user metadata chunk in indexer: %s", exc)
+        return None
+
     def _index_document(self, file_path: str) -> int:
         """Index a text-based document."""
         file_hash = self._hash_file(file_path)
-        chunks = self._evidence_engine.build_evidence(file_path)
+        chunks = self._evidence_engine.build_evidence(file_path) or []
+        user_meta_chunk = self._get_user_metadata_chunk(file_path, file_hash)
+        if user_meta_chunk:
+            chunks.append(user_meta_chunk)
         if not chunks:
             return 0
         for c in chunks:
@@ -388,6 +411,11 @@ class AIFolderIndexer:
                     confidence=0.7,
                 ))
 
+        # --- Chunk D: User metadata (if edited by user) ---
+        user_meta_chunk = self._get_user_metadata_chunk(abs_path, file_hash)
+        if user_meta_chunk:
+            evidence_to_index.append(user_meta_chunk)
+
         count, persisted = self._retrieval.index_chunks_detailed(evidence_to_index)
         indexed += count
         indexed_chunks.extend(persisted)
@@ -487,6 +515,11 @@ class AIFolderIndexer:
                 char_end=0,
                 modality=modality,
             ))
+
+        # 3. User metadata (if edited by user)
+        user_meta_chunk = self._get_user_metadata_chunk(abs_path, file_hash)
+        if user_meta_chunk:
+            evidence_chunks.append(user_meta_chunk)
 
         count, indexed_chunks = self._retrieval.index_chunks_detailed(evidence_chunks)
         self._persist_indexed(indexed_chunks, file_hash=file_hash)

@@ -87,6 +87,19 @@ class VectorEngine:
         return list(self._chunk_ids)
 
     @lock_required
+    def get_vector_by_chunk_id(self, chunk_id: str) -> Optional[np.ndarray]:
+        """Reconstruct the vector for a chunk_id from FAISS index directly."""
+        try:
+            if not hasattr(self, "_id_to_index") or len(self._id_to_index) != len(self._chunk_ids):
+                self._id_to_index = {cid: idx for idx, cid in enumerate(self._chunk_ids)}
+            idx = self._id_to_index.get(chunk_id)
+            if idx is not None and 0 <= idx < self._index.ntotal:
+                return self._index.reconstruct(idx)
+        except Exception as e:
+            logger.debug("Failed to reconstruct vector for chunk %s: %s", chunk_id, e)
+        return None
+
+    @lock_required
     def add(self, chunk_id: str, vector: np.ndarray) -> bool:
         """Add a single vector to the index.
 
@@ -112,6 +125,8 @@ class VectorEngine:
             faiss.normalize_L2(vec)
 
             self._index.add(vec)
+            if hasattr(self, "_id_to_index"):
+                self._id_to_index[chunk_id] = len(self._chunk_ids)
             self._chunk_ids.append(chunk_id)
             return True
         except Exception as e:
@@ -143,6 +158,10 @@ class VectorEngine:
             faiss.normalize_L2(vecs)
 
             self._index.add(vecs)
+            if hasattr(self, "_id_to_index"):
+                start_idx = len(self._chunk_ids)
+                for i, cid in enumerate(chunk_ids):
+                    self._id_to_index[cid] = start_idx + i
             self._chunk_ids.extend(chunk_ids)
             logger.info("Added batch of %d vectors (total: %d)", len(chunk_ids), self.size)
             return len(chunk_ids)
@@ -241,6 +260,7 @@ class VectorEngine:
                 self._index = faiss.IndexFlatIP(self._dimension)
 
             self._chunk_ids = new_chunk_ids
+            self._id_to_index = {}
             logger.info("Removed %d vectors, %d remaining", removed_count, self.size)
             return removed_count
         except Exception as e:
@@ -284,11 +304,13 @@ class VectorEngine:
                     self._chunk_ids = pickle.load(f)
                 logger.info("Loaded %d chunk ID mappings", len(self._chunk_ids))
 
+            self._id_to_index = {}
             return True
         except Exception as e:
             logger.error("Failed to load index: %s", e)
             self._index = faiss.IndexFlatIP(self._dimension)
             self._chunk_ids = []
+            self._id_to_index = {}
             return False
 
     @lock_required
@@ -296,4 +318,5 @@ class VectorEngine:
         """Clear the entire index."""
         self._index = faiss.IndexFlatIP(self._dimension)
         self._chunk_ids = []
+        self._id_to_index = {}
         logger.info("Vector index cleared")

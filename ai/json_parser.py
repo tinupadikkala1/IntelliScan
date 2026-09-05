@@ -70,6 +70,9 @@ class JsonParser:
         """
         text = raw.strip()
 
+        # Strip <think>...</think> reasoning blocks from reasoning models (e.g. DeepSeek-R1)
+        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+
         # Handle markdown code blocks: ```json ... ``` or ``` ... ```
         code_block_pattern = r'```(?:json)?\s*\n?(.*?)\n?\s*```'
         match = re.search(code_block_pattern, text, re.DOTALL)

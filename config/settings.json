@@ -4,7 +4,7 @@
     "single_click_open": false,
     "confirm_delete": true,
     "inactivity_reminder_enabled": true,
-    "inactivity_threshold_days": 2
+    "inactivity_threshold_days": 5
   },
   "appearance": {
     "theme": "dark",
@@ -82,7 +82,7 @@
   },
   "favorites": {
     "paths": [
-      "/tmp/pytest-of-user/pytest-2/test_favorites_add_remove0"
+      "/tmp/pytest-of-user/pytest-9/test_favorites_add_remove0"
     ]
   }
 }

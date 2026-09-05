@@ -47,6 +47,7 @@ class AnalysisManager:
         detail_level: str = "medium",
         progress_callback: Optional[Callable[[int, int], None]] = None,
         cancel_event: Optional[Event] = None,
+        model: Optional[str] = None,
     ) -> dict:
         """Analyze a file and return structured metadata.
 
@@ -65,6 +66,7 @@ class AnalysisManager:
                 Called after each pipeline step completes.
             cancel_event: Optional threading.Event. When set, the pipeline
                 exits early and returns None.
+            model: Optional model name to override the default analysis model.
 
         Returns:
             A dictionary containing: summary, keywords, tags, category,
@@ -72,7 +74,7 @@ class AnalysisManager:
             Returns None if cancelled. On error, returns a dict with an
             'error' key describing the failure.
         """
-        logger.info("Starting file analysis: %s (level=%s)", file_path, detail_level)
+        logger.info("Starting file analysis: %s (level=%s, model=%s)", file_path, detail_level, model)
         start_time = time.time()
 
         def _progress(step: int) -> None:
@@ -117,7 +119,7 @@ class AnalysisManager:
             if _cancelled():
                 return None
 
-            analysis_result = self.ai_service.analyze_text(text, detail_level)
+            analysis_result = self.ai_service.analyze_text(text, detail_level, model=model)
 
             if "error" in analysis_result:
                 elapsed = time.time() - start_time
@@ -145,7 +147,7 @@ class AnalysisManager:
                 "file_hash": file_hash,
                 "generated_time": datetime.now(timezone.utc).isoformat(),
                 "prompt_version": PROMPT_VERSION,
-                "model_name": MODEL_NAME,
+                "model_name": model or analysis_result.get("model_name", MODEL_NAME),
             }
 
             # ── Step 5: Persist to cache ──────────────────────────────────────

@@ -36,6 +36,7 @@ class MenuBar(QObject):
     open_organize_files = Signal()
     open_check_inactive = Signal()
     open_cleanup_db = Signal()
+    open_folder_statistics = Signal()
 
     def __init__(self, window, container) -> None:
         super().__init__()
@@ -73,6 +74,7 @@ class MenuBar(QObject):
         # Intelligent Organization & Inactivity Reminders
         self.act_organize_files = tools_menu.addAction("📁 Organize Files into Folder...")
         self.act_check_inactive = tools_menu.addAction("🔔 Check Inactive Files...")
+        self.act_folder_statistics = tools_menu.addAction("📊 Folder Statistics...")
         self.act_duplicates = tools_menu.addAction("Duplicate Files...")
         self.act_file_relationships = tools_menu.addAction("File Relationships...")
         self.act_file_relationships.setVisible(False)  # Hidden temporarily from Tools menu (set to True to revert)
@@ -105,6 +107,7 @@ class MenuBar(QObject):
         self.act_agent_mode.triggered.connect(self.open_agent_mode)
         self.act_organize_files.triggered.connect(self.open_organize_files)
         self.act_check_inactive.triggered.connect(self.open_check_inactive)
+        self.act_folder_statistics.triggered.connect(self.open_folder_statistics)
         self.act_cleanup_db.triggered.connect(self.open_cleanup_db)
         self.act_duplicates.triggered.connect(self.open_duplicates)
         self.act_file_relationships.triggered.connect(self.open_file_relationships)

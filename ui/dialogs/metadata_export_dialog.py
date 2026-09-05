@@ -118,9 +118,10 @@ class MetadataExportDialog(QDialog):
                     dest, fmt=self.format_combo.currentText().lower(),
                     scope="files", files=self._selected_files,
                 )
+            from core.file_stat_util import format_file_size
             self.status_label.setText(
                 f"✓ Exported {report['count']} files to {report['path']} "
-                f"({report['bytes']} bytes, {report['format'].upper()})"
+                f"({format_file_size(report['bytes'])}, {report['format'].upper()})"
             )
             self.status_label.setStyleSheet("color: green;")
         except Exception as exc:

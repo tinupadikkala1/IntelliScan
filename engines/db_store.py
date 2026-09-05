@@ -155,6 +155,26 @@ class EngineDBStore:
             logger.error("Failed to delete evidence for %s: %s", file_path, e)
             raise PersistenceError(f"Could not delete evidence for {file_path}: {e}") from e
 
+    def delete_evidence_by_chunk_ids(self, chunk_ids: Set[str] | List[str]) -> int:
+        """Delete evidence records and vector maps matching chunk IDs."""
+        if not chunk_ids:
+            return 0
+        cids = list(chunk_ids)
+        try:
+            with self._session_factory() as session:
+                count = session.query(Evidence).filter(
+                    Evidence.chunk_id.in_(cids)
+                ).delete(synchronize_session=False)
+                session.query(VectorMap).filter(
+                    VectorMap.chunk_id.in_(cids)
+                ).delete(synchronize_session=False)
+                session.commit()
+                logger.info("Deleted %d evidence records by chunk IDs", count)
+                return count
+        except Exception as e:
+            logger.debug("Failed to delete evidence by chunk IDs: %s", e)
+            return 0
+
     def get_indexed_file_hashes(self) -> Set[str]:
         """Get set of all file hashes that have been indexed.
 

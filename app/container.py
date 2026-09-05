@@ -229,6 +229,7 @@ class Container:
             self._retrieval_engine = RetrievalEngine(
                 embedding_engine=self.embedding_engine,
                 vector_engine=self.vector_engine,
+                session_factory=self.db.session,
             )
             try:
                 hydrated = self._retrieval_engine.hydrate_from_store(self.db_store)
@@ -248,6 +249,7 @@ class Container:
             self._rag_engine = RAGEngine(
                 retrieval_engine=self.retrieval_engine,
                 resources=self.ai_resources,
+                session_factory=self.db.session,
             )
         return self._rag_engine
 
@@ -541,7 +543,11 @@ class Container:
         """MetadataEditorService — user metadata editing (B7-6)."""
         if self._metadata_editor_service is None:
             from services.metadata_editor_service import MetadataEditorService
-            self._metadata_editor_service = MetadataEditorService(self.db.session)
+            self._metadata_editor_service = MetadataEditorService(
+                session_factory=self.db.session,
+                retrieval_engine=self.retrieval_engine,
+                db_store=self.db_store,
+            )
         return self._metadata_editor_service
 
     @property

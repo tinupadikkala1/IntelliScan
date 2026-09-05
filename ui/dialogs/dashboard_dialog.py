@@ -44,6 +44,7 @@ class DashboardDialog(QDialog):
         super().__init__(parent)
         self._service = service
         self._folder_path = folder_path
+        self._initial_folder_path = folder_path
         self._on_open = on_open
 
         self.setWindowTitle("Knowledge Dashboard")
@@ -57,17 +58,30 @@ class DashboardDialog(QDialog):
         layout = QVBoxLayout(self)
 
         toolbar = QHBoxLayout()
-        title_text = "📊 Workspace Knowledge Dashboard"
-        if self._folder_path:
-            import os
-            title_text += f" ({os.path.basename(self._folder_path)})"
-        title = QLabel(title_text)
+        title = QLabel("📊 Workspace Knowledge Dashboard")
         title.setStyleSheet("font-weight: bold; font-size: 14px;")
         toolbar.addWidget(title)
+
+        if self._initial_folder_path:
+            import os
+            from PySide6.QtWidgets import QComboBox
+            self.scope_combo = QComboBox()
+            self.scope_combo.addItem("🌐 Entire Workspace", None)
+            self.scope_combo.addItem(f"📁 {os.path.basename(self._initial_folder_path)}", self._initial_folder_path)
+            self.scope_combo.setCurrentIndex(1)
+            self.scope_combo.currentIndexChanged.connect(self._on_scope_changed)
+            toolbar.addWidget(self.scope_combo)
+
         toolbar.addStretch(1)
-        refresh_btn = QPushButton("Refresh")
-        refresh_btn.clicked.connect(self.refresh)
-        toolbar.addWidget(refresh_btn)
+
+        self.last_updated_label = QLabel("")
+        self.last_updated_label.setStyleSheet("color: #888; font-size: 11px; margin-right: 6px;")
+        toolbar.addWidget(self.last_updated_label)
+
+        self.refresh_btn = QPushButton("🔄 Refresh")
+        self.refresh_btn.setToolTip("Refresh all knowledge dashboard statistics from database and AI index (F5)")
+        self.refresh_btn.clicked.connect(self.refresh)
+        toolbar.addWidget(self.refresh_btn)
         layout.addLayout(toolbar)
 
         grid = QGridLayout()
@@ -112,6 +126,11 @@ class DashboardDialog(QDialog):
         close_btn.clicked.connect(self.accept)
         layout.addWidget(close_btn, alignment=Qt.AlignRight)
 
+    def _on_scope_changed(self, idx: int) -> None:
+        if hasattr(self, "scope_combo"):
+            self._folder_path = self.scope_combo.currentData()
+            self.refresh()
+
     # ------------------------------------------------------------------ #
     @staticmethod
     def _metric_box(title: str) -> QGroupBox:
@@ -129,10 +148,20 @@ class DashboardDialog(QDialog):
 
     # ------------------------------------------------------------------ #
     def refresh(self) -> None:
+        from datetime import datetime
+        if hasattr(self, "refresh_btn"):
+            self.refresh_btn.setEnabled(False)
+            self.refresh_btn.setText("⏳ Refreshing...")
         try:
-            snap = self._service.snapshot(folder_path=self._folder_path)
+            if hasattr(self._service, "refresh"):
+                snap = self._service.refresh(folder_path=self._folder_path)
+            else:
+                snap = self._service.snapshot(folder_path=self._folder_path)
         except Exception as exc:
             self._set_metric(self.files_box, f"Error: {exc}")
+            if hasattr(self, "refresh_btn"):
+                self.refresh_btn.setText("🔄 Refresh")
+                self.refresh_btn.setEnabled(True)
             return
 
         files = snap["files"]
@@ -169,11 +198,12 @@ class DashboardDialog(QDialog):
         )
 
         dup = snap["duplicates"]
+        from core.file_stat_util import format_file_size
         self._set_metric(
             self.dup_box,
             f"{dup.get('groups', 0)} group(s)\n"
             f"{dup.get('duplicate_files', 0)} duplicate files\n"
-            f"{dup.get('extra_copies_bytes', 0):,} B wasted",
+            f"{format_file_size(dup.get('extra_copies_bytes', 0))} wasted",
         )
 
         rel = snap["relationships"]
@@ -236,6 +266,11 @@ class DashboardDialog(QDialog):
             self.recent_list.addItem(item)
 
         self.refresh_requested.emit()
+        if hasattr(self, "last_updated_label"):
+            self.last_updated_label.setText(f"Last updated: {datetime.now().strftime('%H:%M:%S')}")
+        if hasattr(self, "refresh_btn"):
+            self.refresh_btn.setText("🔄 Refresh")
+            self.refresh_btn.setEnabled(True)
 
     def _on_recent_activated(self, item: QListWidgetItem) -> None:
         path = item.data(Qt.UserRole)

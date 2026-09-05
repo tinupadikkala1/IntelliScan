@@ -162,4 +162,56 @@ class TestTimelineDialog:
         dlg.refresh()
         # Opened-only view: still shows the 2 Recent rows + day headers.
         assert dlg.list_widget.count() >= 2
+        assert hasattr(dlg, "export_csv_btn")
+        assert hasattr(dlg, "export_json_btn")
+        assert hasattr(dlg, "clear_btn")
         dlg.close()
+
+    def test_export_csv_and_json(self, session_factory, tmp_path):
+        import json, csv
+        from services.timeline_service import TimelineService
+
+        _seed(session_factory)
+        svc = TimelineService(session_factory)
+        events = svc.events(days=90)
+
+        # CSV export
+        csv_path = str(tmp_path / "out.csv")
+        assert svc.export_timeline(events, csv_path) is True
+        assert os.path.exists(csv_path)
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            reader = csv.reader(f)
+            header = next(reader)
+            assert header == ["Event Kind", "Date & Time", "Day", "Filename", "File Path", "Extension"]
+            rows = list(reader)
+            assert len(rows) == len(events)
+
+        # JSON export
+        json_path = str(tmp_path / "out.json")
+        assert svc.export_timeline(events, json_path) is True
+        assert os.path.exists(json_path)
+        with open(json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            assert len(data) == len(events)
+            assert data[0]["event_kind"] in ("created", "modified", "opened")
+            assert "filename" in data[0]
+
+    def test_clear_opened_history(self, session_factory):
+        from services.timeline_service import TimelineService
+
+        _seed(session_factory)
+        svc = TimelineService(session_factory)
+        assert len(svc.events(days=90, kinds=["opened"])) == 2
+        removed = svc.clear_opened_history()
+        assert removed == 2
+        assert len(svc.events(days=90, kinds=["opened"])) == 0
+
+    def test_get_file_creation_date(self, tmp_path):
+        from core.file_stat_util import get_file_creation_date
+
+        test_file = tmp_path / "sample.txt"
+        test_file.write_text("hello world")
+        btime = get_file_creation_date(str(test_file))
+        assert btime is not None
+        assert isinstance(btime, datetime)
+

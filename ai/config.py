@@ -2,6 +2,7 @@
 
 # Model settings
 MODEL_NAME: str = 'qwen-local:latest'
+DEEPSEEK_MODEL_NAME: str = 'deepseek-r1-1.5b:latest'
 TEMPERATURE: float = 0.3
 TIMEOUT: int = 480  # seconds (8 minutes for large documents)
 

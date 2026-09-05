@@ -17,6 +17,7 @@ never touches Qt widgets.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import List, Optional
 
@@ -127,13 +128,24 @@ class ConversationManager:
         graph_files = self._graph_files(resolved, file_filter)
         if graph_files:
             file_filter = list(dict.fromkeys((file_filter or []) + graph_files))
-        response = self._retrieval.smart_retrieve(
-            query=resolved,
-            top_k=top_k,
-            threshold=threshold,
-            file_filter=file_filter,
-            max_chunks_per_file=max_chunks_per_file,
-        )
+        if hasattr(self._retrieval, "smart_retrieve"):
+            response = self._retrieval.smart_retrieve(
+                query=resolved,
+                top_k=top_k,
+                threshold=threshold,
+                file_filter=file_filter,
+                max_chunks_per_file=max_chunks_per_file,
+            )
+        else:
+            response = self._retrieval.retrieve(
+                query=resolved,
+                scope=RetrievalScope.WORKSPACE,
+                top_k=top_k,
+                threshold=threshold,
+                file_filter=file_filter,
+                max_chunks_per_file=max_chunks_per_file,
+            )
+
 
         results = self._scope.filter_results(response.results, scope)
         if not response.embedding_available:
@@ -153,7 +165,27 @@ class ConversationManager:
         # 4. Generate the grounded answer (original question, contradiction-aware).
         if cancel_event is not None and cancel_event.is_set():
             return self._cancelled(conversation_id)
-        answer = self._rag.answer_multi(question, evidence_context)
+
+        # Dynamic semantic reasoning hints for small local LLMs
+        extra_instructions = None
+        if hasattr(self._retrieval, "detect_semantic_concepts"):
+            try:
+                concepts = self._retrieval.detect_semantic_concepts(question)
+                hints = []
+                if "human" in concepts and "number_2" in concepts:
+                    hints.append("Special note: 'a couple' (a man and a woman) explicitly represents two humans. 'Two men', 'two women', and 'a couple' all count as two humans.")
+                elif "human" in concepts:
+                    hints.append("Note: 'humans' and 'people' includes men, women, couple, individuals, persons.")
+                if "finance" in concepts:
+                    hints.append("Note: 'invoices' includes bills, billing statements, receipts, and payment accounts.")
+                if "vehicle" in concepts:
+                    hints.append("Note: 'vehicles' includes cars, automobiles, trucks, buses, bikes.")
+                if hints:
+                    extra_instructions = "\n".join(hints)
+            except Exception:
+                pass
+
+        answer = self._rag.answer_multi(question, evidence_context, extra_instructions=extra_instructions)
 
         if cancel_event is not None and cancel_event.is_set():
             return self._cancelled(conversation_id)
@@ -205,9 +237,11 @@ class ConversationManager:
             matches = store.search_entities(query, limit=3)
             related: List[str] = []
             filter_set = {os.path.abspath(f) for f in file_filter}
+            filter_dirs = {os.path.dirname(os.path.abspath(f)) for f in file_filter}
             for m in matches:
                 for rf in store.related_files(m["id"]):
-                    if os.path.abspath(rf) in filter_set:
+                    rf_abs = os.path.abspath(rf)
+                    if rf_abs in filter_set or os.path.dirname(rf_abs) in filter_dirs:
                         related.append(rf)
             return related[:10]
 
@@ -218,6 +252,19 @@ class ConversationManager:
     def _resolve(self, question: str, messages: List[ChatMessage], cancel_event) -> str:
         if len(messages) < 2:
             return question
+
+        # Only attempt followup resolution if the question looks like an anaphoric follow-up
+        q_lower = question.lower()
+        followup_signals = {
+            'it', 'its', 'they', 'them', 'their', 'that', 'this', 'these', 'those',
+            'more', 'else', 'also', 'and', 'what about', 'how about', 'which one',
+            'the first', 'the second', 'the other', 'previous', 'above', 'same',
+        }
+        words = set(q_lower.split())
+        is_likely_followup = bool(words.intersection(followup_signals) or any(s in q_lower for s in ('what about', 'how about', 'tell me more', 'who did', 'why did')))
+        if not is_likely_followup:
+            return question
+
         history = self._history_builder.build_history(messages, max_turns=4)
         if not history.strip():
             return question

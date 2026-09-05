@@ -404,6 +404,10 @@ class SuggestionEngine:
     def dismiss_duplicate_removal(self, suggestion_id: int) -> bool:
         return self._store.set_duplicate_suggestion_status(suggestion_id, "dismissed")
 
+    def clear_all_duplicate_suggestions(self) -> int:
+        """Clear all pending/dismissed duplicate removal suggestions from database."""
+        return self._store.clear_all_duplicate_suggestions()
+
     # ------------------------------------------------------------------ #
     # Duplicate-removal heuristics (B6 §9.3)
     # ------------------------------------------------------------------ #
@@ -437,9 +441,9 @@ class SuggestionEngine:
     def _removal_reason(self, keep: str, remove: str, duplicate_type: str, group) -> str:
         parts = []
         if duplicate_type == "exact":
-            parts.append("100% Identical Content Match (same SHA-256 checksum)")
+            parts.append("Identical content (100% match, same SHA-256 checksum)")
         else:
-            parts.append("High Content Similarity (Near Duplicate)")
+            parts.append("High content similarity (Near Duplicate)")
         if os.path.isfile(keep) and os.path.isfile(remove) and os.path.getsize(keep) == os.path.getsize(remove):
             parts.append("Same file size")
         parts.append(self._filename_reason(keep, remove))

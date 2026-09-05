@@ -16,20 +16,22 @@ _IMAGE_EXT = IMAGE_EXTENSIONS
 
 
 def ocr_image_bytes(data: bytes) -> str:
-    """Run Tesseract OCR on raw image bytes (shared by ImageExtractor and
-    embedded-document-image extraction). Returns extracted text or ""."""
+    """Run OCR (EasyOCR / Tesseract) on raw image bytes. Returns extracted text or ""."""
     try:
         import io
+        import numpy as np
         from PIL import Image
+        from vision.ocr_engine import OCREngine
+
         img = Image.open(io.BytesIO(data))
-        import pytesseract
-        text = pytesseract.image_to_string(img)
-        return text.strip() if text else ""
-    except ImportError:
-        logger.debug("pytesseract not available, skipping OCR")
+        arr = np.array(img)
+        engine = OCREngine()
+        res = engine.extract_from_array(arr)
+        if res and res.text:
+            return res.text.strip()
         return ""
     except Exception as e:
-        logger.debug("OCR failed: %s", e)
+        logger.debug("OCR on image bytes failed: %s", e)
         return ""
 
 
@@ -131,7 +133,7 @@ class ImageExtractor(BaseMultimodalExtractor):
         return blocks
 
     def _extract_ocr(self, file_path: str) -> str:
-        """Extract text from image using Tesseract OCR.
+        """Extract text and digits from image using EasyOCR (with Tesseract fallback).
 
         Args:
             file_path: Path to the image.
@@ -140,6 +142,11 @@ class ImageExtractor(BaseMultimodalExtractor):
             Extracted text string, or empty string on failure.
         """
         try:
+            from vision.ocr_engine import OCREngine
+            engine = OCREngine()
+            res = engine.extract_text(file_path)
+            if res and res.text:
+                return res.text.strip()
             with open(file_path, "rb") as f:
                 data = f.read()
             return ocr_image_bytes(data)

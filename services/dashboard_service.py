@@ -55,6 +55,17 @@ class DashboardService:
             "recent": self.recent_files(limit=8, folder_path=folder_path),
         }
 
+    def refresh(self, folder_path: Optional[str] = None) -> dict:
+        """Backend refresh logic: syncs latest data from engines/db and returns an updated snapshot."""
+        logger.info("Refreshing knowledge dashboard stats (scope: %s)", folder_path or "workspace")
+        if self._retrieval is not None and hasattr(self._retrieval, "hydrate_from_store"):
+            try:
+                self._retrieval.hydrate_from_store()
+            except Exception as e:
+                logger.debug("Retrieval hydration during dashboard refresh: %s", e)
+
+        return self.snapshot(folder_path=folder_path)
+
     # ------------------------------------------------------------------ #
     def files_stats(self, folder_path: Optional[str] = None) -> dict:
         try:
@@ -142,10 +153,9 @@ class DashboardService:
                         continue
                     if row.summary or row.category or row.normalized_category:
                         analyzed += 1
-                    if row.normalized_category:
-                        categories[row.normalized_category] = (
-                            categories.get(row.normalized_category, 0) + 1
-                        )
+                    cat = row.normalized_category or row.category
+                    if cat:
+                        categories[cat] = categories.get(cat, 0) + 1
                 return {
                     "analyzed": analyzed,
                     "unanalyzed": max(0, len(indexed_hashes) - analyzed),
@@ -171,6 +181,10 @@ class DashboardService:
                     indexed_files = self._retrieval.indexed_count
                 except Exception:
                     indexed_files = 0
+                if evidence == 0 and hasattr(self._retrieval, "_evidence") and self._retrieval._evidence:
+                    evidence = len(self._retrieval._evidence)
+                if vector_map == 0 and hasattr(self._retrieval, "_vector") and hasattr(self._retrieval._vector, "size"):
+                    vector_map = self._retrieval._vector.size
             return {
                 "ai_indexed_files": indexed_files,
                 "evidence_chunks": evidence,

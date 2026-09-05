@@ -13,6 +13,7 @@ from typing import Optional
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QGroupBox,
     QHBoxLayout,
@@ -31,10 +32,10 @@ class AskAIDialog(QDialog):
 
     Signals:
         question_submitted: Emitted when the user submits a question.
-            Carries (question, file_path).
+            Carries (question, file_path, model_id).
     """
 
-    question_submitted = Signal(str, str)  # question, file_path
+    question_submitted = Signal(str, str, str)  # question, file_path, model_id
     citation_activated = Signal(str)  # file_path of a clicked citation
 
     def __init__(self, file_path: str, parent=None) -> None:
@@ -63,6 +64,18 @@ class AskAIDialog(QDialog):
         file_label.setWordWrap(True)
         file_label.setStyleSheet("padding: 4px;")
         layout.addWidget(file_label)
+
+        # Model selection row
+        model_layout = QHBoxLayout()
+        model_label = QLabel("<b>Reasoning Model:</b>")
+        self.model_combo = QComboBox()
+        self.model_combo.addItem("⚡ Qwen Local (Fast & Lightweight)", "qwen-local:latest")
+        self.model_combo.addItem("🧠 DeepSeek R1 1.5B (Deep Reasoning)", "deepseek-r1-1.5b:latest")
+        self.model_combo.setCurrentIndex(0)
+        self.model_combo.setToolTip("Select reasoning model: Qwen for quick answers, DeepSeek R1 for step-by-step thinking")
+        model_layout.addWidget(model_label)
+        model_layout.addWidget(self.model_combo, 1)
+        layout.addLayout(model_layout)
 
         # Question input row
         question_layout = QHBoxLayout()
@@ -107,12 +120,14 @@ class AskAIDialog(QDialog):
         if not question:
             return
         self._start_time = time.time()
-        self.status_label.setText("Thinking...")
-        self.status_label.setStyleSheet("color: gray; padding: 4px;")
+        selected_model = self.model_combo.currentData() or "qwen-local:latest"
+        model_label = self.model_combo.currentText().split("(")[0].strip()
+        self.status_label.setText(f"Thinking with {model_label}...")
+        self.status_label.setStyleSheet("color: #3daee9; padding: 4px;")
         self.answer_display.clear()
         self.citations_list.clear()
         self.ask_button.setEnabled(False)
-        self.question_submitted.emit(question, self._file_path)
+        self.question_submitted.emit(question, self._file_path, selected_model)
 
     @property
     def file_path(self) -> str:

@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 import numpy as np
 
@@ -97,11 +98,65 @@ class RetrievalEngine:
     evidence chunk lookup to return ranked, sourced results.
     """
 
+    # Semantic Concept Synonym Groups for deep query intent understanding
+    SEMANTIC_CONCEPTS = {
+        'human': {
+            'human', 'humans', 'person', 'persons', 'people', 'individual', 'individuals',
+            'man', 'men', 'woman', 'women', 'boy', 'boys', 'girl', 'girls', 'child', 'children',
+            'kid', 'kids', 'guy', 'guys', 'lady', 'ladies', 'gentleman', 'gentlemen',
+            'couple', 'pedestrian', 'pedestrians', 'adult', 'adults', 'folk', 'folks',
+            'student', 'students', 'worker', 'workers', 'someone',
+        },
+        'number_1': {'one', '1', 'single', 'solo', 'alone'},
+        'number_2': {'two', '2', 'pair', 'couple', 'both', 'second', 'dual', 'double', 'twice'},
+        'number_3': {'three', '3', 'triple', 'trio'},
+        'number_4': {'four', '4', 'quad'},
+        'number_many': {'many', 'multiple', 'several', 'group', 'numerous', 'crowd', 'collection', 'various'},
+        'animal': {
+            'animal', 'animals', 'pet', 'pets', 'dog', 'dogs', 'cat', 'cats', 'bird', 'birds',
+            'horse', 'horses', 'fish', 'creature', 'creatures', 'wildlife',
+        },
+        'vehicle': {
+            'vehicle', 'vehicles', 'car', 'cars', 'automobile', 'automobiles', 'truck', 'trucks',
+            'bus', 'buses', 'bike', 'bikes', 'bicycle', 'bicycles', 'motorcycle', 'motorcycles',
+            'traffic', 'highway', 'road', 'street',
+        },
+        'finance': {
+            'invoice', 'invoices', 'bill', 'bills', 'billing', 'receipt', 'receipts',
+            'payment', 'payments', 'fee', 'fees', 'cost', 'costs', 'price', 'pricing',
+            'total', 'amount', 'tax', 'balance', 'due', 'subtotal', 'statement',
+        },
+        'action_walk': {'walk', 'walks', 'walking', 'stroll', 'strolling', 'run', 'running', 'sidewalk'},
+        'action_talk': {'talk', 'talks', 'talking', 'conversation', 'conversing', 'chat', 'chatting', 'discuss', 'discussing', 'speech', 'voice'},
+        'nature': {
+            'tree', 'trees', 'forest', 'nature', 'bush', 'bushes', 'grass', 'grassy',
+            'mountain', 'mountains', 'river', 'lake', 'water', 'sky', 'cloud', 'clouds', 'sun', 'sunset',
+        },
+        'building': {
+            'building', 'buildings', 'house', 'houses', 'architecture', 'city', 'skyline',
+            'urban', 'roof', 'store', 'office', 'home',
+        },
+        'technology': {
+            'code', 'coding', 'programming', 'software', 'python', 'mojo', 'script', 'algorithm', 'quantum', 'roadmap',
+        },
+    }
+
+    def detect_semantic_concepts(self, query: str) -> Set[str]:
+        """Detect active semantic concepts in query (e.g. {'human', 'number_2'})."""
+        words = re.findall(r'\b[a-z0-9]+\b', (query or '').lower())
+        detected = set()
+        for w in words:
+            for cname, cwords in self.SEMANTIC_CONCEPTS.items():
+                if w in cwords:
+                    detected.add(cname)
+        return detected
+
     def __init__(
         self,
         embedding_engine: EmbeddingEngine,
         vector_engine: VectorEngine,
         evidence_store: Optional[Dict[str, EvidenceChunk]] = None,
+        session_factory=None,
     ) -> None:
         """Initialize the retrieval engine.
 
@@ -110,10 +165,12 @@ class RetrievalEngine:
             vector_engine: FAISS-based vector index for similarity search.
             evidence_store: In-memory map of chunk_id -> EvidenceChunk.
                            Can be updated dynamically as files are indexed.
+            session_factory: Optional SQLAlchemy session factory to load user metadata.
         """
         self._embedding = embedding_engine
         self._vector = vector_engine
         self._evidence: Dict[str, EvidenceChunk] = evidence_store or {}
+        self._session_factory = session_factory
 
     @property
     def indexed_count(self) -> int:
@@ -327,7 +384,7 @@ class RetrievalEngine:
         modality_filter = self._detect_modality(query)
         logger.debug("Detected modality filter: %s", modality_filter)
 
-        # Step 2: Retrieve many candidates (fetch generously)
+        # Step 2: Retrieve many candidates from vector index (fetch generously)
         response = self.retrieve(
             query=query,
             scope=RetrievalScope.WORKSPACE,
@@ -337,74 +394,210 @@ class RetrievalEngine:
             max_chunks_per_file=max_chunks_per_file or MAX_CHUNKS_PER_FILE,
         )
 
-        if not response.results or not response.embedding_available:
-            return response
+        candidates = list(response.results) if response.results else []
 
-        # Step 2.5: Keyword / Word-boundary Match Booster (with Stopword Filtering)
+        # Step 2.5: Semantic Concept & Keyword Booster (with intent understanding)
         import re
-        raw_words = [w.lower() for w in re.findall(r'\w+', query) if len(w) >= 3]
+        raw_words = [w.lower() for w in re.findall(r'\w+', query) if len(w) >= 2]
 
-        # Stopword set to ignore common, non-distinct search words
+        # Stopword set to ignore common non-distinct search & conversational query terms
         stopwords = {
             'a', 'about', 'above', 'after', 'again', 'against', 'all', 'am', 'an', 'and', 'any', 'are', 'as', 'at',
-            'be', 'because', 'been', 'before', 'being', 'below', 'between', 'both', 'but', 'by', 'can', 'did', 'do',
+            'be', 'because', 'been', 'before', 'being', 'below', 'between', 'both', 'but', 'by', 'can', 'could', 'did', 'do',
             'does', 'doing', 'down', 'during', 'each', 'few', 'for', 'from', 'further', 'had', 'has', 'have', 'having',
             'he', 'her', 'here', 'hers', 'herself', 'him', 'himself', 'his', 'how', 'i', 'if', 'in', 'into', 'is', 'it',
             'its', 'itself', 'me', 'more', 'most', 'my', 'myself', 'no', 'nor', 'not', 'of', 'off', 'on', 'once', 'only',
             'or', 'other', 'our', 'ours', 'ourselves', 'out', 'over', 'own', 'same', 'she', 'should', 'so', 'some', 'such',
             'than', 'that', 'the', 'their', 'theirs', 'them', 'themselves', 'then', 'there', 'these', 'they', 'this',
             'those', 'through', 'to', 'too', 'under', 'until', 'up', 'very', 'was', 'we', 'were', 'what', 'when', 'where',
-            'which', 'while', 'who', 'whom', 'why', 'with', 'you', 'your', 'yours', 'yourself', 'yourselves',
-            # Generic file layout metadata terms
-            'file', 'files', 'path', 'paths', 'size', 'sizes', 'date', 'dates', 'metadata', 'extension', 'extensions',
-            'type', 'types', 'created', 'modified', 'checksum', 'category', 'tags', 'summary',
+            'which', 'while', 'who', 'whom', 'why', 'will', 'with', 'would', 'you', 'your', 'yours', 'yourself', 'yourselves',
+            # Conversational instructions & file query terms
+            'find', 'search', 'show', 'tell', 'give', 'list', 'get', 'display', 'check', 'look', 'provide', 'name', 'names',
+            'file', 'files', 'document', 'documents', 'doc', 'docs', 'folder', 'folders', 'path', 'paths', 'item', 'items',
+            'content', 'contents', 'data', 'info', 'information', 'detail', 'details', 'related', 'mention', 'mentions',
+            'mentioned', 'regarding', 'contain', 'contains', 'containing', 'talk', 'talks', 'talking', 'discuss', 'discusses',
+            'describing', 'describe', 'describes', 'summary', 'summarize', 'size', 'sizes', 'date', 'dates', 'metadata',
+            'extension', 'type', 'types', 'created', 'modified', 'checksum', 'category', 'tags',
+            # Media descriptors (so e.g. "images" is treated as modality filter, not a keyword that boosts files named images.jpeg)
+            'image', 'images', 'photo', 'photos', 'photograph', 'photographs', 'picture', 'pictures', 'pic', 'pics',
+            'screenshot', 'screenshots', 'video', 'videos', 'movie', 'movies', 'clip', 'clips', 'footage',
+            'audio', 'audios', 'sound', 'sounds', 'podcast', 'podcasts', 'recording', 'recordings',
         }
 
-        query_words = [w for w in raw_words if w not in stopwords]
-        # Pre-compile word-boundary patterns for each keyword
-        _qw_patterns = {qw: re.compile(r'\b' + re.escape(qw) + r'\b') for qw in query_words}
-        total_kw = len(query_words)
+        # Semantic Concept Synonym Groups for deep query intent understanding
+        SEMANTIC_CONCEPTS = self.SEMANTIC_CONCEPTS
 
-        if total_kw > 0:
-            seen_chunk_ids = {r.chunk_id for r in response.results}
+        query_words = [w for w in raw_words if w not in stopwords]
+        if not query_words and raw_words:
+            # Fallback if query consists entirely of generic terms
+            query_words = raw_words
+
+        def _word_variants(w: str) -> list[str]:
+            variants = {w}
+            if w.endswith('ies') and len(w) > 4:
+                variants.add(w[:-3] + 'y')
+            elif w.endswith('es') and len(w) > 4:
+                variants.add(w[:-2])
+                variants.add(w[:-1])
+            elif w.endswith('s') and len(w) > 3 and not w.endswith('ss'):
+                variants.add(w[:-1])
+            else:
+                variants.add(w + 's')
+            return list(variants)
+
+        # Build requirement groups: map words to concept synonym sets or variant sets
+        requirement_groups: List[Set[str]] = []
+        for qw in query_words:
+            matched_concept = None
+            for cname, cwords in SEMANTIC_CONCEPTS.items():
+                if qw in cwords:
+                    matched_concept = cwords
+                    break
+            if matched_concept is not None:
+                if matched_concept not in requirement_groups:
+                    requirement_groups.append(matched_concept)
+            else:
+                var_set = set(_word_variants(qw))
+                if var_set not in requirement_groups:
+                    requirement_groups.append(var_set)
+
+        req_patterns = [
+            [re.compile(r'\b' + re.escape(term) + r'\b') for term in group]
+            for group in requirement_groups
+        ]
+        total_reqs = len(req_patterns)
+
+        # Ensure any user-edited metadata stored in SQLite is reflected in _evidence
+        if self._session_factory and total_reqs > 0:
+            try:
+                import json
+                from services.sqlite_indexer import IndexedFile
+                from services.metadata_editor_service import build_user_metadata_chunk
+                with self._session_factory() as session:
+                    rows = session.query(IndexedFile).filter(IndexedFile.user_metadata_json.isnot(None)).all()
+                    for row in rows:
+                        if not row.user_metadata_json:
+                            continue
+                        try:
+                            meta = json.loads(row.user_metadata_json)
+                        except Exception:
+                            continue
+                        user_chunk = build_user_metadata_chunk(
+                            row.absolute_path, meta, file_hash=row.checksum or ""
+                        )
+                        if user_chunk and user_chunk.chunk_id not in self._evidence:
+                            self._evidence[user_chunk.chunk_id] = user_chunk
+            except Exception as exc:
+                logger.debug("Live SQLite scan for user metadata skipped/failed: %s", exc)
+
+        if total_reqs > 0 and self._evidence:
+            seen_chunk_ids = {r.chunk_id for r in candidates}
             clean_file_filter = {os.path.abspath(f) for f in file_filter} if file_filter else None
             for cid, chunk in self._evidence.items():
                 if clean_file_filter and os.path.abspath(chunk.file_path) not in clean_file_filter:
                     continue
-                fn_lower = os.path.basename(chunk.file_path).lower().replace('-', ' ').replace('_', ' ')
+                # If a modality filter is active, skip chunks that clearly belong to other modalities
+                if modality_filter:
+                    m = chunk.modality or self.modality_of(chunk.file_path)
+                    if m != modality_filter and not (modality_filter == "media" and m in ("audio", "video")):
+                        continue
+
+                fn_clean = os.path.basename(chunk.file_path).lower().replace('-', ' ').replace('_', ' ')
                 txt_lower = chunk.text.lower()
-                # Count how many query keywords match (word-boundary)
-                matched = 0
-                for qw, pat in _qw_patterns.items():
-                    if pat.search(fn_lower) or pat.search(txt_lower):
-                        matched += 1
-                if matched == 0:
+
+                fn_reqs_satisfied = 0
+                txt_reqs_satisfied = 0
+                for group_pats in req_patterns:
+                    fn_hit = any(pat.search(fn_clean) for pat in group_pats)
+                    txt_hit = any(pat.search(txt_lower) for pat in group_pats)
+                    if fn_hit:
+                        fn_reqs_satisfied += 1
+                    if txt_hit:
+                        txt_reqs_satisfied += 1
+
+                reqs_satisfied = sum(
+                    1 for group_pats in req_patterns
+                    if any(pat.search(fn_clean) or pat.search(txt_lower) for pat in group_pats)
+                )
+
+                if reqs_satisfied == 0:
                     continue
-                # Scale boost: 0.70 base + 0.18 * (matched/total) → max 0.88
-                boost = 0.70 + 0.18 * (matched / total_kw)
+
+                satisfaction_ratio = reqs_satisfied / total_reqs
+
+                # Base score for requirement satisfaction
+                if satisfaction_ratio == 1.0:
+                    if fn_reqs_satisfied == total_reqs:
+                        boost = 1.00  # Exact match across all requirements in filename
+                    else:
+                        boost = 0.95  # Complete match in content / caption
+                elif satisfaction_ratio >= 0.5:
+                    boost = 0.45 + 0.15 * satisfaction_ratio
+                else:
+                    boost = 0.30
+
+                # Priority bonus for clean caption chunks over metadata stubs
+                st = (getattr(chunk, 'source_type', '') or '').lower()
+                sl = (getattr(chunk, 'source_label', '') or '').lower()
+                if st == 'image_caption' or 'caption' in sl:
+                    boost += 0.02
+                elif st == 'user_metadata' or 'user metadata' in sl:
+                    # User-curated metadata/notes are explicit human labels; boost significantly
+                    boost = max(boost, 0.98 if satisfaction_ratio == 1.0 else 0.85)
+
+                # Subject primacy bonus: if opening sentence mentions required concepts,
+                # the document/image is centrally focused on the queried subject.
+                first_sent = txt_lower.split('.')[0] if '.' in txt_lower else txt_lower[:120]
+                primary_hit = any(
+                    any(pat.search(first_sent) for pat in gp)
+                    for gp in req_patterns
+                )
+                if primary_hit:
+                    boost += 0.02
+
+                # Concept density / frequency bonus: multiple topical mentions
+                total_hits = sum(
+                    sum(len(pat.findall(txt_lower)) for pat in gp) +
+                    sum(len(pat.findall(fn_clean)) for pat in gp)
+                    for gp in req_patterns
+                )
+                if total_hits >= 4:
+                    boost += 0.02
+                elif total_hits >= 3:
+                    boost += 0.01
+
+                # Filename reinforcement bonus
+                if fn_reqs_satisfied > 0 and satisfaction_ratio == 1.0 and fn_reqs_satisfied < total_reqs:
+                    boost += 0.01
+
+                boost = min(1.0, boost)
+
                 if cid not in seen_chunk_ids:
-                    sr = SearchResult(chunk_id=cid, score=boost, rank=len(response.results))
-                    res = self._to_result(chunk, sr, len(response.results))
-                    response.results.append(res)
+                    sr = SearchResult(chunk_id=cid, score=boost, rank=len(candidates))
+                    res = self._to_result(chunk, sr, len(candidates))
+                    candidates.append(res)
                     seen_chunk_ids.add(cid)
                 else:
-                    for r in response.results:
+                    for r in candidates:
                         if r.chunk_id == cid:
                             r.score = max(r.score, boost)
                             break
 
+        if not candidates:
+            return response
+
         # Step 3: Apply modality filter (with fallback)
         if modality_filter:
-            filtered = self._filter_by_modality(response.results, modality_filter)
+            filtered = self._filter_by_modality(candidates, modality_filter)
             if not filtered:
                 # Fallback: modality guess was wrong, return all results
                 logger.debug(
                     "Modality filter '%s' returned 0 results, falling back to all",
                     modality_filter,
                 )
-                filtered = response.results
+                filtered = candidates
         else:
-            filtered = response.results
+            filtered = candidates
 
         # Step 3.5: Penalize metadata-catalog files (CSV/JSON that mostly
         # list filenames rather than substantive content).
@@ -415,11 +608,10 @@ class RetrievalEngine:
                 lines = r.text.strip().splitlines()
                 if lines:
                     path_lines = sum(1 for ln in lines if '/' in ln or '\\' in ln)
-                    if path_lines / len(lines) > 0.4:
-                        r.score *= 0.7  # Deprioritize path-heavy catalog files
+                    if path_lines / len(lines) > 0.3:
+                        r.score *= 0.65  # Deprioritize path-heavy catalog files
 
         # Step 3.6: Sort all results descending by score
-        # Since scores might have been boosted or items prepended, a clean sort ensures relevance ordering.
         filtered.sort(key=lambda x: x.score, reverse=True)
 
         # Step 4: Deduplicate by file (keep best score per file)
@@ -427,6 +619,7 @@ class RetrievalEngine:
 
         # Step 5: Take top_k results
         final_results = deduped[:top_k]
+
 
         # Update ranks
         for i, r in enumerate(final_results):
@@ -469,54 +662,57 @@ class RetrievalEngine:
         import re
         q = query.lower()
 
-        # ── Image: strong phrases first, then unambiguous single words ──
+        # ── Image: strong phrases first, then unambiguous single words and extensions ──
         image_phrases = [
-            'which image', 'which photo', 'which picture',
-            'in the image', 'in the photo', 'in the picture',
+            'which image', 'which images', 'which photo', 'which photos', 'which picture', 'which pictures',
+            'in the image', 'in the images', 'in the photo', 'in the photos', 'in the picture', 'in the pictures',
             'show me images', 'show me photos', 'show me pictures',
             'find images', 'find photos', 'find pictures',
-            'search images', 'search photos',
+            'search images', 'search photos', 'search pictures',
         ]
         for phrase in image_phrases:
             if phrase in q:
                 return "image"
-        for word in ('image', 'photo', 'picture', 'screenshot',
-                     'png', 'jpg', 'jpeg'):
+        for word in ('image', 'images', 'photo', 'photos', 'photograph', 'photographs',
+                     'picture', 'pictures', 'pic', 'pics', 'screenshot', 'screenshots',
+                     'png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'svg'):
             if re.search(r'\b' + word + r'\b', q):
                 return "image"
 
-        # ── Audio: strong phrases first, then unambiguous single words ──
+        # ── Audio: strong phrases first, then unambiguous single words and extensions ──
         audio_phrases = [
-            'which audio', 'in the audio', 'in the recording',
+            'which audio', 'which audios', 'in the audio', 'in the recording', 'in the recordings',
             'what was said', 'who is speaking', 'listen to',
         ]
         for phrase in audio_phrases:
             if phrase in q:
                 return "audio"
-        for word in ('audio', 'podcast', 'song', 'music', 'mp3', 'wav'):
+        for word in ('audio', 'audios', 'sound', 'sounds', 'voice', 'voices', 'podcast', 'podcasts',
+                     'song', 'songs', 'music', 'recording', 'recordings', 'track', 'tracks',
+                     'speech', 'mp3', 'wav', 'flac', 'm4a', 'aac', 'ogg'):
             if re.search(r'\b' + word + r'\b', q):
                 return "audio"
 
-        # ── Video: strong phrases first, then unambiguous single words ──
+        # ── Video: strong phrases first, then unambiguous single words and extensions ──
         video_phrases = [
-            'which video', 'in the video', 'video shows',
+            'which video', 'which videos', 'in the video', 'in the videos', 'video shows',
             'watch the', 'play the video',
         ]
         for phrase in video_phrases:
             if phrase in q:
                 return "video"
-        for word in ('video', 'footage', 'mp4'):
+        for word in ('video', 'videos', 'movie', 'movies', 'clip', 'clips', 'footage',
+                     'mp4', 'mkv', 'avi', 'mov', 'webm'):
             if re.search(r'\b' + word + r'\b', q):
                 return "video"
 
-        # ── Document: only explicit format requests ──
-        for word in ('pdf', 'docx', 'pptx', 'xlsx', 'spreadsheet'):
+        # ── Document: explicit format or doc requests ──
+        for word in ('pdf', 'pdfs', 'docx', 'pptx', 'xlsx', 'csv', 'spreadsheet', 'spreadsheets',
+                     'presentation', 'presentations', 'slide', 'slides', 'doc', 'docs',
+                     'document', 'documents'):
             if re.search(r'\b' + word + r'\b', q):
                 return "document"
 
-        # No specific modality detected — search across all types.
-        # NOTE: 'diagram', 'figure', 'file', 'document', 'slide', 'clip',
-        # 'recording', 'illustration' are intentionally NOT triggers here.
         return None
 
     def _filter_by_modality(
@@ -547,9 +743,11 @@ class RetrievalEngine:
         return filtered
 
     def _deduplicate_by_file(self, results: List[RetrievalResult]) -> List[RetrievalResult]:
-        """Keep only the best-scoring result per file.
+        """Keep only the best-scoring result per file, prioritizing clean content over metadata stubs.
 
-        Prevents the same file from appearing multiple times in results.
+        Prevents the same file from appearing multiple times in results while
+        ensuring high-quality substantive chunks (like vision captions or transcripts)
+        are preferred over raw metadata or filename stubs.
 
         Args:
             results: List of results (may have duplicates per file).
@@ -557,10 +755,47 @@ class RetrievalEngine:
         Returns:
             Deduplicated list (one result per file, highest score kept).
         """
+        def _chunk_quality(res: RetrievalResult) -> int:
+            st = (res.source_type or "").lower()
+            sl = (res.source_label or "").lower()
+            if st == "image_caption" or "caption" in sl:
+                return 3
+            if st in ("transcript", "document", "text", "ocr"):
+                return 2
+            if st in ("image_content", "media_content"):
+                return 1
+            return 0
+
         seen_files: Dict[str, RetrievalResult] = {}
         for r in results:
-            if r.file_path not in seen_files or r.score > seen_files[r.file_path].score:
+            if r.file_path not in seen_files:
                 seen_files[r.file_path] = r
+                continue
+
+            existing = seen_files[r.file_path]
+            r_qual = _chunk_quality(r)
+            ex_qual = _chunk_quality(existing)
+
+            # If scores are close (within 0.08), prefer higher quality content chunk
+            if r_qual > ex_qual and r.score >= (existing.score - 0.08):
+                r.score = max(r.score, existing.score)
+                seen_files[r.file_path] = r
+            elif ex_qual > r_qual and existing.score >= (r.score - 0.08):
+                existing.score = max(r.score, existing.score)
+            elif r.score > existing.score:
+                seen_files[r.file_path] = r
+
+        # Clean caption upgrade: if the chosen chunk for an image is not an image_caption,
+        # but an image_caption chunk exists in self._evidence for this file, adopt its text
+        # so LLM context gets the pure vision description rather than metadata stubs.
+        for path, res in seen_files.items():
+            if (res.source_type or "") != "image_caption" and (res.modality == "image" or self.modality_of(path) == "image"):
+                caps = [ev for ev in self._evidence.values() if ev.file_path == path and ev.source_type == "image_caption"]
+                if caps:
+                    best_cap = caps[0]
+                    res.text = best_cap.text
+                    res.source_label = best_cap.source_label
+                    res.source_type = best_cap.source_type
 
         # Sort by score descending
         deduped = sorted(seen_files.values(), key=lambda x: x.score, reverse=True)
@@ -571,6 +806,7 @@ class RetrievalEngine:
         file_path: str,
         top_k: int = TOP_K_DEFAULT,
         threshold: float = SIMILARITY_THRESHOLD,
+        allow_embed: bool = False,
     ) -> RetrievalResponse:
         """Find documents similar to a given file.
 
@@ -580,6 +816,7 @@ class RetrievalEngine:
             file_path: Path of the reference file.
             top_k: Maximum number of similar results.
             threshold: Minimum similarity score.
+            allow_embed: Whether to re-embed missing chunks on the fly (defaults to False for fast retrieval).
 
         Returns:
             RetrievalResponse with similar document chunks (excluding the source file).
@@ -599,23 +836,35 @@ class RetrievalEngine:
                 elapsed_ms=elapsed,
             )
 
-        # Generate embeddings for file chunks and compute average
-        texts_to_embed = []
-        model_name = getattr(self._embedding, "_model", "")
-        for chunk in file_chunks:
-            text = chunk.text
-            if "nomic-embed-text" in model_name:
-                text = f"{EMBED_DOCUMENT_PREFIX}{text}"
-            texts_to_embed.append(text)
+        # Try to reconstruct pre-computed vectors directly from the vector index (sub-millisecond)
+        vectors = []
+        if hasattr(self._vector, "get_vector_by_chunk_id"):
+            for chunk in file_chunks:
+                vec = self._vector.get_vector_by_chunk_id(chunk.chunk_id)
+                if vec is not None:
+                    vectors.append(vec)
 
-        # Generate embeddings in batch (with fallback if embed_batch is mocked as a MagicMock)
-        res = self._embedding.embed_batch(texts_to_embed)
-        from unittest.mock import Mock
-        if isinstance(res, Mock) or not isinstance(res, (list, tuple)):
-            vectors = [self._embedding.embed_text(txt) for txt in texts_to_embed]
-            vectors = [v for v in vectors if v is not None]
-        else:
-            vectors = [v for v in res if v is not None]
+        # Fallback: if vectors were not already in the index, only generate embeddings if allow_embed=True
+        if not vectors and allow_embed:
+            texts_to_embed = []
+            model_name = getattr(self._embedding, "_model", "")
+            for chunk in file_chunks:
+                text = chunk.text
+                if "nomic-embed-text" in model_name:
+                    text = f"{EMBED_DOCUMENT_PREFIX}{text}"
+                texts_to_embed.append(text)
+
+            try:
+                res = self._embedding.embed_batch(texts_to_embed)
+                from unittest.mock import Mock
+                if isinstance(res, Mock) or not isinstance(res, (list, tuple)):
+                    v_list = [self._embedding.embed_text(txt) for txt in texts_to_embed]
+                    vectors = [v for v in v_list if v is not None]
+                else:
+                    vectors = [v for v in res if v is not None]
+            except Exception as exc:
+                logger.warning("Embedding generation failed in retrieve_similar: %s", exc)
+                vectors = []
 
         if not vectors:
             elapsed = (time.time() - start) * 1000
@@ -688,10 +937,9 @@ class RetrievalEngine:
     def hydrate_from_store(self, db_store) -> int:
         """Restore the in-memory evidence map from persistent storage.
 
-        Loads every evidence chunk from the database and keeps only the
-        chunks whose vectors still exist in the FAISS index. Orphaned FAISS
-        vectors (no matching evidence) are removed so the invariant
-        ``every FAISS id resolves to an EvidenceChunk`` holds.
+        Loads every evidence chunk from the database into self._evidence so
+        search, keyword matching, and RAG context building always have full access.
+        Orphaned FAISS vectors (vectors with no matching evidence in DB) are removed.
 
         Args:
             db_store: EngineDBStore instance.
@@ -703,21 +951,18 @@ class RetrievalEngine:
             return 0
         try:
             all_evidence = db_store.get_all_evidence()
-            faiss_ids = set(self._vector.list_chunk_ids())
+            if not all_evidence:
+                return 0
 
-            hydrated = 0
-            orphaned = []
+            # Always populate the in-memory evidence map with ALL evidence from DB
             for chunk in all_evidence:
-                if chunk.chunk_id in faiss_ids:
-                    self._evidence[chunk.chunk_id] = chunk
-                    hydrated += 1
-                else:
-                    orphaned.append(chunk.chunk_id)
+                self._evidence[chunk.chunk_id] = chunk
 
-            # Remove FAISS vectors whose evidence is missing (rare corruption)
-            missing_in_db = faiss_ids - {
-                c.chunk_id for c in all_evidence
-            }
+            faiss_ids = set(self._vector.list_chunk_ids())
+            hydrated = len(self._evidence)
+
+            # Remove FAISS vectors whose evidence is missing (stale/corrupt vectors)
+            missing_in_db = faiss_ids - {c.chunk_id for c in all_evidence}
             if missing_in_db:
                 logger.warning(
                     "Hydration: %d orphaned FAISS vectors without evidence, removing",
@@ -726,8 +971,8 @@ class RetrievalEngine:
                 self._vector.remove_by_chunk_ids(missing_in_db)
 
             logger.info(
-                "Hydrated %d evidence chunks (orphans: %d evidence, %d vectors)",
-                hydrated, len(orphaned), len(missing_in_db),
+                "Hydrated %d evidence chunks into retrieval engine (FAISS vectors: %d)",
+                hydrated, self._vector.size,
             )
             return hydrated
         except Exception as e:
@@ -873,3 +1118,102 @@ class RetrievalEngine:
             report["valid"] = False
             report["error"] = str(exc)
             return report
+
+    # ============ RETRIEVAL ENHANCEMENTS (Phase 2) ============
+    # Methods for confidence scoring, filtering, and query expansion
+    
+    def score_result_relevance(self, result: RetrievalResult) -> float:
+        """Score result relevance (60% similarity + 40% quality).
+        
+        Args:
+            result: RetrievalResult to score
+            
+        Returns:
+            Confidence score 0.0-1.0
+        """
+        return (result.similarity * 0.6) + (result.chunk_quality * 0.4)
+    
+    def filter_results_by_confidence(
+        self, 
+        results: List[RetrievalResult], 
+        threshold: float = 0.6
+    ) -> List[RetrievalResult]:
+        """Filter results by confidence threshold.
+        
+        Args:
+            results: List of RetrievalResult objects
+            threshold: Confidence threshold (default 0.6)
+            
+        Returns:
+            Filtered list of results above threshold
+        """
+        return [
+            r for r in results 
+            if self.score_result_relevance(r) >= threshold
+        ]
+    
+    def expand_query(self, query: str, synonyms: Optional[Dict[str, List[str]]] = None) -> List[str]:
+        """Expand query with synonyms.
+        
+        Args:
+            query: Original query string
+            synonyms: Optional dict mapping terms to synonym lists
+            
+        Returns:
+            List of expanded queries (original first)
+        """
+        expanded = [query]
+        
+        # Simple synonym expansion if provided
+        if synonyms:
+            for term, syn_list in synonyms.items():
+                if term.lower() in query.lower():
+                    for syn in syn_list:
+                        expanded.append(query.replace(term, syn, 1))
+        
+        return expanded
+    
+    def smart_retrieve_with_expansion(
+        self,
+        query: str,
+        scope: RetrievalScope = RetrievalScope.WORKSPACE,
+        top_k: int = TOP_K_DEFAULT,
+        synonyms: Optional[Dict[str, List[str]]] = None,
+    ) -> RetrievalResponse:
+        """Retrieve using query expansion for better coverage.
+        
+        Args:
+            query: Search query
+            scope: Search scope
+            top_k: Number of results
+            synonyms: Optional synonym mapping
+            
+        Returns:
+            Merged and deduplicated RetrievalResponse
+        """
+        # Expand query
+        expanded_queries = self.expand_query(query, synonyms)
+        
+        # Retrieve for each variant
+        all_results = {}  # doc_id -> RetrievalResult
+        
+        for expanded_query in expanded_queries:
+            response = self.retrieve(expanded_query, scope, top_k)
+            for result in response.results:
+                if result.document_id not in all_results:
+                    all_results[result.document_id] = result
+        
+        # Convert to list and score
+        merged_results = list(all_results.values())
+        scored = sorted(
+            merged_results,
+            key=lambda r: self.score_result_relevance(r),
+            reverse=True
+        )[:top_k]
+        
+        return RetrievalResponse(
+            query=query,
+            results=scored,
+            elapsed_ms=0,
+            scope=scope,
+        )

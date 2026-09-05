@@ -262,3 +262,46 @@ class TestDuplicateDialog:
         qtbot.addWidget(dlg)
         assert not dlg.accept_removal_btn.isEnabled()
         dlg.close()
+
+    def test_dialog_clear_results(self, qapp, qtbot, tmp_path):
+        from services.batch5_models import DuplicateGroup, DuplicateRemovalSuggestion
+        from ui.dialogs.duplicate_dialog import DuplicateDialog
+
+        g = DuplicateGroup(checksum="c" * 64, files=[str(tmp_path / "a.txt"), str(tmp_path / "b.txt")])
+        s = DuplicateRemovalSuggestion(
+            id=1, group_checksum="c" * 64, keep_path=str(tmp_path / "a.txt"),
+            remove_path=str(tmp_path / "b.txt"), confidence=0.82,
+            reason="Identical content (same SHA-256)",
+        )
+        dlg = DuplicateDialog([g], removal_suggestions=[s])
+        qtbot.addWidget(dlg)
+        assert dlg.clear_btn.isEnabled()
+        assert dlg.group_list.count() == 1
+
+        # Click delete old results
+        dlg.clear_btn.click()
+        assert dlg.group_list.count() == 0
+        assert dlg.files_list.count() == 0
+        assert not dlg.clear_btn.isEnabled()
+        assert not dlg.accept_removal_btn.isEnabled()
+        assert "deleted" in dlg.summary_label.text().lower()
+        dlg.close()
+
+    def test_clear_all_suggestions_in_store_and_engine(self, tmp_path):
+        from services.batch5_store import Batch5Store
+        from services.suggestion_engine import SuggestionEngine
+
+        with _db_session_factory(tmp_path) as sf:
+            store = Batch5Store(sf)
+            engine = SuggestionEngine(store)
+
+            store.create_duplicate_suggestion(
+                group_checksum="a" * 64,
+                keep_path=str(tmp_path / "k.txt"),
+                remove_path=str(tmp_path / "r.txt"),
+            )
+            assert len(store.list_duplicate_suggestions()) == 1
+
+            cleared = engine.clear_all_duplicate_suggestions()
+            assert cleared == 1
+            assert len(store.list_duplicate_suggestions()) == 0

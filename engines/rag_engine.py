@@ -15,6 +15,7 @@ from typing import List, Optional
 
 import requests
 
+from ai.hallucination_detector import HallucinationDetector
 from .config import (
     DIRECT_MAX_CONTEXT,
     LLM_MODEL,
@@ -60,6 +61,26 @@ class RAGResponse:
     grounded: bool = True
 
 
+def format_reasoning_answer(raw_answer: str) -> str:
+    """Format an LLM response containing <think>...</think> into clean structured display."""
+    if not raw_answer:
+        return ""
+    import re
+    match = re.search(r'<think>(.*?)</think>', raw_answer, flags=re.DOTALL)
+    if not match:
+        return raw_answer.strip()
+
+    thought = match.group(1).strip()
+    clean_answer = re.sub(r'<think>.*?</think>', '', raw_answer, flags=re.DOTALL).strip()
+
+    if not thought:
+        return clean_answer
+    if not clean_answer:
+        return f"💭 Reasoning Process:\n{thought}"
+
+    return f"💭 Reasoning Process:\n{thought}\n\n{'─' * 45}\n\n🎯 Answer:\n{clean_answer}"
+
+
 class RAGEngine:
     """Basic Retrieval-Augmented Generation engine.
 
@@ -80,6 +101,7 @@ class RAGEngine:
         temperature: float = RAG_TEMPERATURE,
         timeout: int = RAG_TIMEOUT,
         resources=None,
+        session_factory=None,
     ) -> None:
         """Initialize the RAG engine.
 
@@ -90,6 +112,7 @@ class RAGEngine:
             temperature: Generation temperature.
             timeout: Request timeout in seconds.
             resources: Optional AIResourceManager to bound LLM generation.
+            session_factory: Optional SQLAlchemy session factory for user metadata.
         """
         self._retrieval = retrieval_engine
         self._model = model
@@ -97,6 +120,108 @@ class RAGEngine:
         self._temperature = temperature
         self._timeout = timeout
         self._resources = resources
+        self._session_factory = session_factory
+        # Initialize hallucination detector for safety checking
+        self._hallucination_detector = HallucinationDetector()
+
+    def _get_user_metadata_text(self, file_path: str) -> str:
+        """Fetch user-curated metadata/notes from database if available."""
+        if not self._session_factory:
+            return ""
+        try:
+            import json
+            from services.sqlite_indexer import IndexedFile
+            with self._session_factory() as session:
+                row = session.query(IndexedFile).filter_by(
+                    absolute_path=os.path.abspath(file_path)
+                ).first()
+                if not row or not row.user_metadata_json:
+                    return ""
+                meta = json.loads(row.user_metadata_json)
+                lines = []
+                if meta.get("title"):
+                    lines.append(f"Title: {meta['title']}")
+                if meta.get("description"):
+                    lines.append(f"Description: {meta['description']}")
+                if meta.get("notes"):
+                    lines.append(f"Notes: {meta['notes']}")
+                if meta.get("user_tags"):
+                    tags = meta["user_tags"]
+                    lines.append(f"User Tags: {', '.join(tags) if isinstance(tags, list) else tags}")
+                if meta.get("custom"):
+                    lines.append(f"Custom Metadata: {json.dumps(meta['custom'], ensure_ascii=False)}")
+                if lines:
+                    return "[User-Provided Metadata & Notes]\n" + "\n".join(lines)
+        except Exception as exc:
+            logger.debug("Failed reading user metadata for RAG: %s", exc)
+        return ""
+
+    # ============ PHASE 3.2: HALLUCINATION DETECTION SAFETY ============
+    
+    def _check_answer_safety(self, question: str, answer: str, context_blocks: List[str] = None) -> Dict:
+        """Check if answer is safe (not hallucinated) before returning to user."""
+        try:
+            if context_blocks is None:
+                context_blocks = []
+
+            # Strip chain-of-thought blocks before hallucination validation
+            import re
+            clean_eval_answer = re.sub(r'<think>.*?</think>', '', answer, flags=re.DOTALL).strip() or answer
+            
+            hallucination_check = self._hallucination_detector.detect_hallucination(
+                question=question,
+                answer=clean_eval_answer,
+                context=context_blocks,
+                model_name=self._model
+            )
+            
+            return {
+                'safe': not hallucination_check.is_hallucinated,
+                'confidence': hallucination_check.confidence,
+                'issues': hallucination_check.issues,
+                'recommendation': hallucination_check.recommendation,
+                'scores': hallucination_check.scores
+            }
+        
+        except Exception as e:
+            logger.warning(f"Error in hallucination check: {e}")
+            return {
+                'safe': True,
+                'confidence': 0.5,
+                'issues': [f'Safety check error: {str(e)}'],
+                'recommendation': 'Could not verify answer safety',
+                'scores': {}
+            }
+    
+    def _wrap_answer_with_safety_notice(self, answer: str, safety_check: Dict) -> str:
+        """Wrap answer with safety notices if needed."""
+        if safety_check['safe']:
+            return answer
+        
+        confidence = safety_check['confidence']
+        
+        if confidence > 0.8:
+            warning = (
+                "🚨 HIGH RISK - LIKELY HALLUCINATION 🚨\n"
+                f"{safety_check['recommendation']}\n\n"
+                "ORIGINAL ANSWER (DO NOT TRUST):\n"
+                f"{answer}\n\n"
+                "ISSUES:\n"
+                + "\n".join(f"• {issue}" for issue in safety_check['issues'])
+            )
+        elif confidence > 0.6:
+            warning = (
+                "⚠️ MODERATE RISK - VERIFY BEFORE USE ⚠️\n"
+                f"{safety_check['recommendation']}\n\n"
+                "ANSWER:\n"
+                f"{answer}\n\n"
+                "POTENTIAL ISSUES:\n"
+                + "\n".join(f"• {issue}" for issue in safety_check['issues'])
+            )
+        else:
+            warning = answer
+        
+        return warning
 
     def ask(
         self,
@@ -158,6 +283,11 @@ class RAGEngine:
                 grounded=False,
             )
 
+        # Step 5: Check for hallucination (Phase 3.2)
+        context_texts = [r.text for r in retrieval.results]
+        safety_check = self._check_answer_safety(question, answer, context_texts)
+        answer = self._wrap_answer_with_safety_notice(answer, safety_check)
+
         elapsed = (time.time() - start) * 1000
         logger.info("RAG answer generated in %.1fms (%d citations)", elapsed, len(citations))
 
@@ -195,7 +325,7 @@ class RAGEngine:
             top_k=top_k,
         )
 
-    def ask_file_direct(self, question: str, file_path: str) -> RAGResponse:
+    def ask_file_direct(self, question: str, file_path: str, model: Optional[str] = None) -> RAGResponse:
         """Ask a question about a file using full-file context (Tier 1).
 
         Extracts all text from the file and sends it directly to the LLM
@@ -208,12 +338,13 @@ class RAGEngine:
         Args:
             question: The user's question about the file.
             file_path: Path to the file to query.
+            model: Optional model name to override the default LLM.
 
         Returns:
             RAGResponse with the answer.
         """
         import os
-        logger.info("RAG direct ask: '%s' about '%s'", question[:50], file_path)
+        logger.info("RAG direct ask: '%s' about '%s' (model=%s)", question[:50], file_path, model or self._model)
         start = time.time()
 
         file_path = os.path.abspath(file_path)
@@ -222,9 +353,11 @@ class RAGEngine:
         from engines.config import detect_modality_and_ext
         modality, _detected_ext = detect_modality_and_ext(file_path)
 
+        user_meta_text = self._get_user_metadata_text(file_path)
+
         if modality == "image":
-            # For images: send directly to vision model (moondream)
-            return self._ask_image_direct(question, file_path, start)
+            # For images: send directly to vision model (moondream) or LLM
+            return self._ask_image_direct(question, file_path, start, user_meta_text=user_meta_text, model=model)
         elif modality in ("audio", "media"):
             full_text = self._extract_audio_text(file_path)
         elif modality == "video":
@@ -234,6 +367,9 @@ class RAGEngine:
             from .content_engine import UniversalContentEngine
             engine = UniversalContentEngine()
             full_text = engine.extract_full_text(file_path)
+
+        if user_meta_text:
+            full_text = f"{user_meta_text}\n\n{full_text}" if full_text else user_meta_text
 
         if not full_text or not full_text.strip():
             elapsed = (time.time() - start) * 1000
@@ -272,7 +408,7 @@ class RAGEngine:
             prompt = self._build_direct_prompt(question, full_text, file_name)
 
         # Generate answer
-        answer = self._generate(prompt)
+        answer = self._generate(prompt, model=model)
         if not answer:
             elapsed = (time.time() - start) * 1000
             return RAGResponse(
@@ -283,6 +419,35 @@ class RAGEngine:
                 elapsed_ms=elapsed,
                 grounded=False,
             )
+
+        # Format reasoning tokens (<think>...</think>) into clean structured display
+        formatted_answer = format_reasoning_answer(answer)
+
+        elapsed = (time.time() - start) * 1000
+        logger.info("Direct answer generated in %.1fms", elapsed)
+
+        # Create a single citation for the whole file
+        citations = [Citation(
+            source_label=file_name,
+            file_path=file_path,
+            text_snippet=full_text[:100] + "..." if len(full_text) > 100 else full_text,
+            score=1.0,
+        )]
+
+        # Phase 3.2: Check hallucination safety
+        context_blocks = [full_text[:2000]]
+        safety_check = self._check_answer_safety(question, answer, context_blocks)
+        safe_answer = self._wrap_answer_with_safety_notice(formatted_answer, safety_check)
+
+        return RAGResponse(
+            question=question,
+            answer=safe_answer,
+            citations=citations,
+            retrieval_results=1,
+            elapsed_ms=elapsed,
+            model=model or self._model,
+            grounded=True,
+        )
 
         elapsed = (time.time() - start) * 1000
         logger.info("Direct answer generated in %.1fms", elapsed)
@@ -346,15 +511,16 @@ class RAGEngine:
     # Batch 4: multi-document reasoning + conversation follow-up resolution
     # ------------------------------------------------------------------ #
     _MULTI_DOC_INSTRUCTIONS = (
-        "You are an intelligent workspace AI assistant analyzing documents, images, audio transcripts, and video transcripts.\n"
-        "INSTRUCTIONS:\n"
-        "- The EVIDENCE below contains full extracted body text, OCR, vision captions, and complete Whisper speech transcripts from audio (.mp3, .wav) and video (.mp4, .mkv) files.\n"
-        "- Treat audio and video transcripts as the complete, authoritative content of those media files.\n"
-        "- NEVER claim that you cannot analyze audio or video files. NEVER issue disclaimers or refusals.\n"
-        "- Provide a direct, thorough, comprehensive, and detailed answer using all available transcript and document evidence.\n"
-        "- Reference source labels when attributing details."
+        "You are an assistant analyzing documents in the user's workspace.\n"
+        "Your task is to identify and list every document from the CONTEXT that answers or matches the user's question.\n"
+        "Rules:\n"
+        "1. Recognize synonyms and semantic equivalencies: 'humans' or 'people' includes men, women, a couple, individuals, persons. A couple (man and woman) represents two humans. Numbers like 'two' include 2, pair, couple, both.\n"
+        "2. For every matching file in CONTEXT, output a bullet point in the format:\n"
+        "   - DOCUMENT: <filename> - <description of what is depicted and why it matches>\n"
+        "3. List ALL matching files found from the CONTEXT. Do not output single words like '(Yes)'. Always describe each matching document.\n"
+        "4. Base your answer strictly on the facts in the CONTEXT. Do not invent details not present in the CONTEXT.\n"
+        "5. Treat all transcript, vision caption, and document evidence as authoritative."
     )
-
 
     def answer_multi(self, question: str, context: str, extra_instructions: str = None) -> str:
         """Generate a grounded answer from cross-document evidence context.
@@ -367,16 +533,15 @@ class RAGEngine:
         Returns:
             Generated answer text, or empty string on failure.
         """
-        instructions = self._MULTI_DOC_INSTRUCTIONS
+        if not context or not context.strip():
+            return "No files closely related to your query were found in the indexed workspace."
+
+        system = self._MULTI_DOC_INSTRUCTIONS
         if extra_instructions:
-            instructions = f"{instructions}\n{extra_instructions}"
-        prompt = (
-            f"{instructions}\n\n"
-            f"CONTEXT:\n{context}\n\n"
-            f"QUESTION: {question}\n\n"
-            "ANSWER:"
-        )
-        return self._generate(prompt)
+            system = f"{system}\n{extra_instructions}"
+        user_prompt = f"CONTEXT:\n{context}\n\nQUESTION: {question}"
+        ans = self._generate(user_prompt, system_prompt=system)
+        return ans or "No files closely related to your query were found in the indexed workspace."
 
     def resolve_followup(self, question: str, history: str) -> str:
         """Rewrite a conversational follow-up into a standalone query.
@@ -613,7 +778,9 @@ class RAGEngine:
             return f"{s // 60}:{s % 60:02d}"
         return f"{_fmt(start)} - {_fmt(end)}"
 
-    def _ask_image_direct(self, question: str, file_path: str, start_time: float) -> RAGResponse:
+    def _ask_image_direct(
+        self, question: str, file_path: str, start_time: float, user_meta_text: str = "", model: Optional[str] = None
+    ) -> RAGResponse:
         """Ask a question about an image using OCR + vision combined.
 
         Strategy:
@@ -625,6 +792,8 @@ class RAGEngine:
             question: The user's question about the image.
             file_path: Path to the image file.
             start_time: When processing started.
+            user_meta_text: Optional user-curated metadata/notes text.
+            model: Optional model name to override the default LLM.
 
         Returns:
             RAGResponse with the answer.
@@ -633,22 +802,24 @@ class RAGEngine:
         ocr_text = ""
         image_description = ""
 
-        # Step 1: Try OCR first (fast)
-        try:
-            import pytesseract
-            from PIL import Image
+        if not user_meta_text:
+            user_meta_text = self._get_user_metadata_text(file_path)
 
-            img = Image.open(file_path)
-            ocr_text = pytesseract.image_to_string(img).strip()
-            if ocr_text:
-                logger.info("OCR extracted: %d chars", len(ocr_text))
+        # Step 1: Try OCR first (fast & bilingual for characters + digits)
+        try:
+            from vision.ocr_engine import OCREngine
+            engine = OCREngine()
+            res = engine.extract_text(file_path)
+            if res and res.text:
+                ocr_text = res.text.strip()
+                logger.info("OCR extracted: %d chars (lang: %s, conf: %.2f)", len(ocr_text), res.language, res.confidence)
         except Exception as e:
             logger.debug("OCR failed: %s", e)
 
         # Step 2: If OCR got good text, use it directly (skip moondream)
-        # For screenshots and text-heavy images, OCR is more accurate and faster
-        if ocr_text and len(ocr_text) > 50:
-            combined_context = f"[Exact Text Content from Image]\n{ocr_text}"
+        # For screenshots, signs, and text-heavy images, OCR is more accurate and faster
+        if ocr_text and len(ocr_text) >= 20:
+            combined_context = f"[Exact Text & Digits Extracted from Image]\n{ocr_text}"
         else:
             # Step 3: OCR failed or got little text — use moondream vision
             try:
@@ -680,6 +851,8 @@ class RAGEngine:
                 combined_context = f"[Visual Description of Image]\n{image_description}"
             elif ocr_text:
                 combined_context = f"[Text Found in Image]\n{ocr_text}"
+            elif user_meta_text:
+                combined_context = ""
             else:
                 elapsed = (time.time() - start_time) * 1000
                 return RAGResponse(
@@ -691,6 +864,9 @@ class RAGEngine:
                     elapsed_ms=elapsed,
                     grounded=False,
                 )
+
+        if user_meta_text:
+            combined_context = f"{user_meta_text}\n\n{combined_context}".strip()
 
         prompt = (
             "You are analyzing an image. Below is the content extracted from the image. "
@@ -709,7 +885,7 @@ class RAGEngine:
             "ANSWER:"
         )
 
-        answer = self._generate(prompt)
+        answer = self._generate(prompt, model=model)
         elapsed = (time.time() - start_time) * 1000
 
         if not answer:
@@ -722,17 +898,20 @@ class RAGEngine:
                 grounded=False,
             )
 
+        formatted_answer = format_reasoning_answer(answer)
+        snippet = (ocr_text[:100] if ocr_text else (image_description[:100] if image_description else user_meta_text[:100]))
         return RAGResponse(
             question=question,
-            answer=answer,
+            answer=formatted_answer,
             citations=[Citation(
                 source_label=file_name,
                 file_path=file_path,
-                text_snippet=(ocr_text[:100] if ocr_text else image_description[:100]) + "...",
+                text_snippet=(snippet + "...") if snippet else file_name,
                 score=1.0,
             )],
             retrieval_results=1,
             elapsed_ms=elapsed,
+            model=model or self._model,
             grounded=True,
         )
 
@@ -858,11 +1037,13 @@ class RAGEngine:
             "ANSWER:"
         )
 
-    def _generate(self, prompt: str) -> str:
+    def _generate(self, prompt: str, system_prompt: Optional[str] = None, model: Optional[str] = None) -> str:
         """Call Ollama to generate a response using the chat API.
 
         Args:
-            prompt: The complete prompt to send.
+            prompt: The complete user prompt to send.
+            system_prompt: Optional system instruction prompt.
+            model: Optional model name to override self._model.
 
         Returns:
             Generated text, or empty string on failure.
@@ -870,9 +1051,9 @@ class RAGEngine:
         try:
             if self._resources is not None:
                 with self._resources.llm():
-                    response = self._post_generate(prompt)
+                    response = self._post_generate(prompt, system_prompt=system_prompt, model=model)
             else:
-                response = self._post_generate(prompt)
+                response = self._post_generate(prompt, system_prompt=system_prompt, model=model)
 
             if response.status_code != 200:
                 logger.error(
@@ -904,13 +1085,19 @@ class RAGEngine:
             logger.error("RAG generation error: %s", e)
             return ""
 
-    def _post_generate(self, prompt: str):
+    def _post_generate(self, prompt: str, system_prompt: Optional[str] = None, model: Optional[str] = None):
         """Raw POST to Ollama /api/chat (runs under the LLM resource slot) for chat template wrapping."""
+        target_model = model or self._model
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
         return requests.post(
             f"{self._base_url}/api/chat",
             json={
-                "model": self._model,
-                "messages": [{"role": "user", "content": prompt}],
+                "model": target_model,
+                "messages": messages,
                 "stream": False,
                 "options": {"temperature": self._temperature},
             },

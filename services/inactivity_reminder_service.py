@@ -13,7 +13,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +45,10 @@ class InactiveFileInfo:
 class InactivityReminderService:
     """Service to scan for inactive/unopened files and record file access events."""
 
-    def __init__(self, session_factory, classifier=None) -> None:
+    def __init__(self, session_factory, classifier=None, days_threshold: int = 14) -> None:
         self._session_factory = session_factory
         self._classifier = classifier
+        self.days_threshold = days_threshold
 
     def mark_file_opened(self, file_path: str) -> None:
         """Record current time as last_opened_at for the file in SQLite."""
@@ -68,18 +69,28 @@ class InactivityReminderService:
             logger.debug("Failed to record file open for %s: %s", abs_path, exc)
 
     def find_inactive_files(
-        self, threshold_days: int = 14, max_results: int = 50
+        self,
+        threshold_days: Optional[int] = None,
+        days: Optional[int] = None,
+        max_results: int = 100,
+        include_size: bool = True,
     ) -> List[InactiveFileInfo]:
         """Find indexed files that have not been opened for >= threshold_days.
 
         Args:
             threshold_days: Number of days of inactivity (e.g. 7, 14, 28).
+            days: Alias for threshold_days (for Phase 2.2 compatibility).
             max_results: Cap on total inactive files returned.
+            include_size: Whether to include file size info.
 
         Returns:
             List of InactiveFileInfo objects sorted by days_inactive descending.
         """
-        if self._session_factory is None or threshold_days <= 0:
+        eff_days = threshold_days if threshold_days is not None else days
+        if eff_days is None:
+            eff_days = getattr(self, "days_threshold", 14)
+
+        if self._session_factory is None or eff_days <= 0:
             return []
 
         now = datetime.utcnow()
@@ -101,7 +112,7 @@ class InactivityReminderService:
                     continue
 
                 delta_days = (now - ref_dt).days
-                if delta_days >= threshold_days:
+                if delta_days >= eff_days:
                     intro_str = (row.scan_timestamp or row.created_date or ref_dt).strftime("%Y-%m-%d")
                     opened_str = row.last_opened_at.strftime("%Y-%m-%d") if row.last_opened_at else "Never opened"
 
@@ -112,7 +123,7 @@ class InactivityReminderService:
                             days_inactive=delta_days,
                             introduced_date=intro_str,
                             last_opened=opened_str,
-                            file_size=row.size or 0,
+                            file_size=(row.size or 0) if include_size else 0,
                             category="general",
                         )
                     )
@@ -132,3 +143,50 @@ class InactivityReminderService:
 
         return top_results
 
+    def reset_reminder_state(self) -> None:
+        """Reset all inactivity reminder state for testing."""
+        if hasattr(self, 'last_reminder_shown'):
+            self.last_reminder_shown.clear()
+
+        try:
+            if self._session_factory:
+                from database.models import InactivityReminder
+                with self._session_factory() as session:
+                    session.query(InactivityReminder).delete()
+                    session.commit()
+        except Exception as e:
+            logger.debug(f"Could not clear DB reminders: {e}")
+
+    def mark_file_accessed(self, file_path: str) -> None:
+        """Mark a file as recently accessed, resetting its inactivity timer."""
+        self.mark_file_opened(file_path)
+
+    def get_inactive_stats(self, days: Optional[int] = None) -> Dict[str, Any]:
+        """Get statistics about inactive files."""
+        eff_days = days if days is not None else getattr(self, "days_threshold", 14)
+        try:
+            inactive_files = self.find_inactive_files(threshold_days=eff_days, max_results=1000)
+
+            if not inactive_files:
+                return {
+                    'total_inactive': 0,
+                    'total_size': 0,
+                    'oldest_inactive': None,
+                    'most_recent_inactive': None,
+                    'average_days': 0,
+                }
+
+            total_size = sum(f.file_size for f in inactive_files)
+            days_list = [f.days_inactive for f in inactive_files]
+
+            return {
+                'total_inactive': len(inactive_files),
+                'total_size': total_size,
+                'oldest_inactive': max(days_list) if days_list else 0,
+                'most_recent_inactive': min(days_list) if days_list else 0,
+                'average_days': sum(days_list) / len(days_list) if days_list else 0,
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting stats: {e}")
+            return {}

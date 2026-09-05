@@ -247,3 +247,142 @@ class TestMetadataEditor:
         svc = MetadataEditorService(session_factory)
         with pytest.raises(MetadataEditorError):
             svc.save("/ws/not_indexed.txt", {"title": "X"})
+
+    def test_user_metadata_chunk_creation(self):
+        from services.metadata_editor_service import build_user_metadata_chunk
+
+        chunk = build_user_metadata_chunk(
+            "/path/to/diagram.png",
+            {
+                "title": "Shortest Path Graph",
+                "description": "dijkstras algorithm visualization",
+                "notes": "Time complexity is O(E + V log V)",
+                "user_tags": ["algorithm", "graph"],
+            },
+            file_hash="hash123",
+        )
+        assert chunk is not None
+        assert chunk.modality == "image"
+        assert chunk.source_type == "user_metadata"
+        assert "dijkstras algorithm" in chunk.text
+        assert "O(E + V log V)" in chunk.text
+        assert chunk.confidence == 1.0
+
+    def test_user_metadata_live_sync_and_smart_retrieve(self, session_factory, tmp_path):
+        from unittest.mock import MagicMock
+        import numpy as np
+        from engines.retrieval_engine import RetrievalEngine
+        from services.metadata_editor_service import MetadataEditorService
+
+        img_path = str(tmp_path / "algorithm_graph.png")
+        _seed_files(session_factory, [
+            {"name": "algorithm_graph.png", "path": img_path, "checksum": "img_hash_123"}
+        ])
+
+        # Mock vector engine and embedding engine
+        mock_vector = MagicMock()
+        mock_vector.size = 0
+        mock_vector.dimension = 384
+        mock_vector.search.return_value = []
+        mock_vector.remove_by_chunk_ids.return_value = 0
+
+        mock_embedding = MagicMock()
+        mock_embedding.embed_documents.return_value = [np.zeros(384, dtype=np.float32)]
+
+        retrieval = RetrievalEngine(
+            embedding_engine=mock_embedding,
+            vector_engine=mock_vector,
+            session_factory=session_factory,
+        )
+
+        svc = MetadataEditorService(
+            session_factory=session_factory,
+            retrieval_engine=retrieval,
+        )
+
+        # Save metadata containing "dijkstras algorithm"
+        svc.save(img_path, {
+            "title": "Graph Traversal",
+            "description": "dijkstras algorithm implementation",
+            "notes": "Single source shortest path",
+            "user_tags": ["dijkstras", "shortest_path"],
+        })
+
+        # Test smart_retrieve for "dijkstras algorithm"
+        res = retrieval.smart_retrieve("dijkstras algorithm")
+        assert len(res.results) >= 1
+        top = res.results[0]
+        assert top.file_path == img_path
+        assert top.score >= 0.95
+        assert top.source_type == "user_metadata"
+
+        # Test modality query "dijkstras algorithm image"
+        res_mod = retrieval.smart_retrieve("dijkstras algorithm image")
+        assert len(res_mod.results) >= 1
+        assert res_mod.results[0].file_path == img_path
+        assert res_mod.results[0].modality == "image"
+
+    def test_user_metadata_clear_removes_from_retrieval(self, session_factory, tmp_path):
+        from unittest.mock import MagicMock
+        from engines.retrieval_engine import RetrievalEngine
+        from services.metadata_editor_service import MetadataEditorService
+
+        img_path = str(tmp_path / "diagram.jpg")
+        _seed_files(session_factory, [
+            {"name": "diagram.jpg", "path": img_path, "checksum": "diag_123"}
+        ])
+
+        mock_vector = MagicMock()
+        mock_vector.size = 0
+        mock_vector.search.return_value = []
+        mock_embedding = MagicMock()
+
+        retrieval = RetrievalEngine(
+            embedding_engine=mock_embedding,
+            vector_engine=mock_vector,
+            session_factory=session_factory,
+        )
+        svc = MetadataEditorService(session_factory=session_factory, retrieval_engine=retrieval)
+
+        svc.save(img_path, {"description": "dijkstras algorithm"})
+        res = retrieval.smart_retrieve("dijkstras algorithm")
+        assert len(res.results) == 1
+
+        # Clear metadata
+        svc.clear(img_path)
+        res_after = retrieval.smart_retrieve("dijkstras algorithm")
+        assert len(res_after.results) == 0
+
+    def test_user_metadata_in_rag_direct_ask(self, session_factory, tmp_path):
+        from unittest.mock import MagicMock, patch
+        from engines.rag_engine import RAGEngine
+
+        img_path = str(tmp_path / "graph.png")
+        _seed_files(session_factory, [
+            {"name": "graph.png", "path": img_path, "checksum": "graph_123"}
+        ])
+
+        # Write user metadata to SQLite
+        from services.metadata_editor_service import MetadataEditorService
+        svc = MetadataEditorService(session_factory)
+        svc.save(img_path, {
+            "title": "Shortest Path",
+            "notes": "Explains Dijkstra's Algorithm in detail with edge relaxation steps.",
+        })
+
+        rag = RAGEngine(
+            retrieval_engine=MagicMock(),
+            session_factory=session_factory,
+        )
+
+        user_text = rag._get_user_metadata_text(img_path)
+        assert "Dijkstra's Algorithm" in user_text
+        assert "Shortest Path" in user_text
+
+        with patch.object(rag, "_generate", return_value="This image describes Dijkstra's algorithm."):
+            resp = rag._ask_image_direct("What algorithm is this?", img_path, 0.0)
+            assert resp.grounded is True
+            assert "Dijkstra's" in resp.answer
+            assert len(resp.citations) == 1
+            assert resp.citations[0].file_path == img_path
+

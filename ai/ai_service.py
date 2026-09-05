@@ -2,6 +2,7 @@
 
 import logging
 import time
+from typing import Optional
 
 from .json_parser import JsonParser
 from .ollama_client import OllamaClient
@@ -36,7 +37,7 @@ class AIService:
 
         logger.info("AIService initialized")
 
-    def analyze_text(self, text: str, detail_level: str = "medium") -> dict:
+    def analyze_text(self, text: str, detail_level: str = "medium", model: Optional[str] = None) -> dict:
         """Analyze text and return structured metadata.
 
         Orchestrates the full pipeline: build prompt → call Ollama → parse JSON.
@@ -45,12 +46,13 @@ class AIService:
             text: The document text to analyze.
             detail_level: One of 'low', 'medium', 'high'. Controls summary depth
                 and keyword/tag count. Defaults to 'medium'.
+            model: Optional model name to use for analysis.
 
         Returns:
             A dictionary with keys: summary, keywords, tags, category, language.
             On error, returns a dict with an 'error' key describing the failure.
         """
-        logger.info("Starting text analysis (%d chars, level=%s)", len(text), detail_level)
+        logger.info("Starting text analysis (%d chars, level=%s, model=%s)", len(text), detail_level, model or self.ollama_client.model)
         start_time = time.time()
 
         try:
@@ -63,7 +65,7 @@ class AIService:
             prompt = self.prompt_builder.build_analysis_prompt(text, detail_level)
 
             # Step 2: Call Ollama
-            raw_response = self.ollama_client.generate(prompt)
+            raw_response = self.ollama_client.generate(prompt, model=model)
 
             if not raw_response or not raw_response.strip():
                 logger.error("Ollama returned an empty response")
@@ -71,6 +73,7 @@ class AIService:
 
             # Step 3: Parse and validate JSON
             result = self.json_parser.parse(raw_response)
+            result["model_name"] = model or self.ollama_client.model
 
             # Programmatically build structured summary from separate fields if present
             about = result.get("about", "")

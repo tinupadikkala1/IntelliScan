@@ -144,3 +144,121 @@ class RelationshipExtractor:
         if not m:
             raise ValueError("No JSON object in response")
         return json.loads(m.group(0))
+
+
+    # ============ PHASE 3.1: RELATIONSHIP VALIDATION ============
+    
+    def extract_with_validation(self, text: str, entities: List = None, 
+                               validation_threshold: float = 0.7) -> List:
+        """Extract relationships with confidence-based validation."""
+        from typing import List
+        
+        # Extract raw relationships
+        raw_relationships = self.extract(text)
+        
+        # Validate each relationship
+        validated = []
+        for rel in raw_relationships:
+            try:
+                confidence = self._validate_relationship(rel, text, entities or [], validation_threshold)
+                
+                if confidence >= validation_threshold:
+                    validated.append({
+                        'source': rel.source if hasattr(rel, 'source') else str(rel),
+                        'target': rel.target if hasattr(rel, 'target') else str(rel),
+                        'relation': rel.relation if hasattr(rel, 'relation') else 'related_to',
+                        'confidence': confidence,
+                        'validated': True
+                    })
+            except Exception:
+                pass
+        
+        return validated
+    
+    def _validate_relationship(self, relationship, text: str, entities: List,
+                              confidence_threshold: float = 0.7) -> float:
+        """Validate if extracted relationship actually exists."""
+        confidence = 0.0
+        
+        source = relationship.source if hasattr(relationship, 'source') else str(relationship)
+        target = relationship.target if hasattr(relationship, 'target') else str(relationship)
+        rel_type = relationship.relation if hasattr(relationship, 'relation') else 'related_to'
+        
+        # Check 1: Both entities exist in text
+        if source.lower() in text.lower() and target.lower() in text.lower():
+            confidence += 0.30
+        else:
+            return 0.0
+        
+        # Check 2: Find textual evidence
+        evidence_score = self._find_relationship_evidence(source, target, rel_type, text)
+        confidence += evidence_score * 0.25
+        
+        # Check 3: Relationship type is plausible
+        if self._is_relationship_plausible(source, rel_type, target):
+            confidence += 0.25
+        
+        # Check 4: Entities are in entities list (if provided)
+        if entities:
+            entity_names = [
+                e.get('name', e) if isinstance(e, dict) else (e.name if hasattr(e, 'name') else str(e))
+                for e in entities
+            ]
+            if any(source.lower() in str(n).lower() for n in entity_names):
+                confidence += 0.10
+            if any(target.lower() in str(n).lower() for n in entity_names):
+                confidence += 0.10
+        
+        return min(1.0, confidence)
+    
+    def _find_relationship_evidence(self, source: str, target: str, rel_type: str, text: str) -> float:
+        """Find textual evidence of relationship."""
+        import re
+        
+        keywords_map = {
+            'related_to': ['related to', 'connected to', 'associated with', 'linked to'],
+            'works_for': ['works for', 'employed by', 'at', 'joined'],
+            'located_in': ['located in', 'based in', 'in', 'of'],
+            'partner_with': ['partnered with', 'works with', 'collaborates'],
+            'mentioned_in': ['mentioned', 'discussed', 'referenced'],
+        }
+        
+        keywords = keywords_map.get(rel_type, [])
+        
+        source_idx = text.lower().find(source.lower())
+        target_idx = text.lower().find(target.lower())
+        
+        if source_idx == -1 or target_idx == -1:
+            return 0.0
+        
+        # Check proximity
+        proximity = abs(source_idx - target_idx)
+        if proximity > 500:
+            return 0.2
+        
+        # Check for keywords between entities
+        start = min(source_idx, target_idx)
+        end = max(source_idx, target_idx) + 100
+        between_text = text[start:end].lower()
+        
+        for keyword in keywords:
+            if keyword in between_text:
+                return 0.9
+        
+        # Check for pronouns
+        if any(p in between_text for p in ['he ', 'she ', 'they ', 'their']):
+            return 0.6
+        
+        return 0.3
+    
+    def _is_relationship_plausible(self, source: str, rel_type: str, target: str) -> bool:
+        """Check if relationship makes logical sense."""
+        if source.lower() == target.lower():
+            return False
+        
+        valid_types = {
+            'works_for', 'located_in', 'partner_with', 'related_to',
+            'mentioned_in', 'cites', 'references', 'owns', 'parent_of'
+        }
+        
+        return rel_type in valid_types

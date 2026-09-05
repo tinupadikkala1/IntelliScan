@@ -354,16 +354,18 @@ class PreviewPanel(QWidget):
     # ------------------------------------------------------------------ #
     def _file_props(self, path: str) -> str:
         from PySide6.QtCore import QFileInfo
+        from core.file_stat_util import format_file_size
 
         fi = QFileInfo(path)
         size = fi.size()
         modified = fi.lastModified().toString()
         kind = "Folder" if fi.isDir() else "File"
+        size_str = format_file_size(size, include_exact=True) if not fi.isDir() else "-"
         return (
             f"Name: {fi.fileName()}\n"
             f"Path: {fi.absoluteFilePath()}\n"
             f"Type: {kind}\n"
-            f"Size: {size:,} bytes\n"
+            f"Size: {size_str}\n"
             f"Modified: {modified}"
         )
 
@@ -375,6 +377,7 @@ class PreviewPanel(QWidget):
 
             # Look up the file in the indexed files
             from services.sqlite_indexer import IndexedFile
+            from core.file_stat_util import format_file_size
 
             session = self.database.session()
             records = session.query(IndexedFile).all()
@@ -398,7 +401,7 @@ class PreviewPanel(QWidget):
             if getattr(record, 'extension', None):
                 metadata_lines.append(f"Extension: {record.extension}")
             if getattr(record, 'size', None) is not None:
-                metadata_lines.append(f"Size: {record.size} bytes")
+                metadata_lines.append(f"Size: {format_file_size(record.size, include_exact=True)}")
             if getattr(record, 'created_date', None):
                 metadata_lines.append(f"Created: {record.created_date}")
             if getattr(record, 'modified_date', None):

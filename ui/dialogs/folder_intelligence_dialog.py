@@ -33,21 +33,27 @@ class FolderIntelligenceDialog(QDialog):
     def __init__(
         self,
         folder_path: str,
-        service,
+        service=None,
         on_classify_file: Optional[Callable[[str], None]] = None,
         parent=None,
+        intelligence_service=None,
+        summary_service=None,
     ) -> None:
         super().__init__(parent)
         self._folder_path = folder_path
         self._service = service
         self._on_classify_file = on_classify_file
-        self._intelligence_service = None
-        self._summary_service = None
+        self._intelligence_service = intelligence_service
+        self._summary_service = summary_service
 
         self.setWindowTitle("Folder Statistics")
         self.setMinimumSize(560, 640)
         self.setModal(False)
         self._setup_ui()
+        if self._intelligence_service is not None:
+            self.stats_label.setVisible(True)
+        if self._summary_service is not None:
+            self.summary_section.setVisible(True)
         self.refresh()
 
     # ------------------------------------------------------------------ #
@@ -154,9 +160,9 @@ class FolderIntelligenceDialog(QDialog):
 
         total = info.total_files
         if total == 0:
-            self.summary_label.setText("No indexed files in this folder.")
+            self.summary_label.setText("No files found in this folder.")
             self.distribution_label.setText(
-                "Index the folder first (Batch 1 scan) to see its composition."
+                "This folder is empty or contains no readable files."
             )
             return
 
@@ -188,19 +194,14 @@ class FolderIntelligenceDialog(QDialog):
             fi = self._intelligence_service.analyze(self._folder_path)
         except Exception as exc:
             self.stats_label.setText(f"Statistics unavailable: {exc}")
+            self.stats_label.setVisible(True)
             return
         if fi.total_files == 0:
-            self.stats_label.setText("Statistics: no indexed files in this folder.")
+            self.stats_label.setText("Statistics: no files found in this folder.")
+            self.stats_label.setVisible(True)
             return
-        size = fi.total_size
-        if size >= 1024 ** 3:
-            size_str = f"{size / 1024 ** 3:.2f} GB"
-        elif size >= 1024 ** 2:
-            size_str = f"{size / 1024 ** 2:.2f} MB"
-        elif size >= 1024:
-            size_str = f"{size / 1024:.1f} KB"
-        else:
-            size_str = f"{size} B"
+        from core.file_stat_util import format_file_size
+        size_str = format_file_size(fi.total_size, include_exact=True)
         lines = [
             f"Total files: {fi.total_files}  ·  Total size: {size_str}",
             f"Date range: {fi.date_range or '—'}",

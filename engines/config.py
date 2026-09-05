@@ -32,9 +32,25 @@ OLLAMA_BASE_URL = 'http://localhost:11434'
 # ---------------------------------------------------------------------- #
 # Models (all configurable from here — no hardcoded model names elsewhere)
 # ---------------------------------------------------------------------- #
-LLM_MODEL = 'qwen-local:latest'          # RAG / direct-answer reasoning model
+LLM_MODEL = 'qwen-local:latest'          # Default RAG / direct-answer model
+DEEPSEEK_MODEL = 'deepseek-r1-1.5b:latest' # DeepSeek R1 Distill 1.5B reasoning model
 VISION_MODEL = 'moondream:latest'        # image captioning / vision model
 WHISPER_MODEL = 'base'                   # speech transcription model size
+
+SUPPORTED_REASONING_MODELS = [
+    {
+        "id": "qwen-local:latest",
+        "name": "Qwen Local (Fast & Lightweight)",
+        "badge": "⚡ Fast",
+        "description": "Quick direct answers, low memory footprint",
+    },
+    {
+        "id": "deepseek-r1-1.5b:latest",
+        "name": "DeepSeek R1 (Deep Reasoning 1.5B)",
+        "badge": "🧠 Reasoning",
+        "description": "Step-by-step reasoning with <think> chain-of-thought",
+    },
+]
 
 RAG_TEMPERATURE = 0.4
 RAG_TIMEOUT = 300  # seconds

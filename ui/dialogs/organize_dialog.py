@@ -1,14 +1,16 @@
-"""User-Directed & Automatic Content-Based File Organization Dialog.
+"""Content-Based File Organization Dialog — Single-Action Intelligent Clustering.
 
-Partition workspace files into N relation clusters (>= 50% content overlap)
-and M independent items (< 50% overlap).
-Automatically names target folders based on core topic content and moves files.
+Automatically groups workspace files by content relationships (>= threshold similarity)
+into descriptive folders named after the relation/core content of the files.
 """
 
 from __future__ import annotations
 
+import logging
 import os
-from typing import Callable, List, Optional
+import re
+import threading
+from typing import Callable, List, Optional, Tuple
 
 from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtWidgets import (
@@ -16,50 +18,111 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QFileDialog,
+    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
+    QWidget,
 )
 
 from services.file_organizer_service import (
     FileOrganizerService,
+    MoveResult,
     OrganizationCandidate,
     ProposedFolderCluster,
 )
 
+logger = logging.getLogger(__name__)
 
 
-class ClusterWorker(QThread):
-    """Background worker thread for content-based folder clustering."""
+class OrganizeWorkerThread(QThread):
+    """Background worker thread for content analysis and file organization."""
 
-    clusters_found = Signal(list)
-    cluster_error = Signal(str)
+    progress = Signal(int, int, str)
+    completed = Signal(dict)
+    error = Signal(str)
 
-    def __init__(self, organizer, dest_dir: str, threshold: int) -> None:
+    def __init__(
+        self,
+        organizer: FileOrganizerService,
+        source_dir: str,
+        dest_dir: str,
+        threshold: int,
+        only_groups: bool,
+    ) -> None:
         super().__init__()
         self.organizer = organizer
+        self.source_dir = source_dir
         self.dest_dir = dest_dir
         self.threshold = threshold
+        self.only_groups = only_groups
+        self.cancel_event = threading.Event()
+
+    def cancel(self) -> None:
+        self.cancel_event.set()
 
     def run(self) -> None:
         try:
+            self.progress.emit(10, 100, "Scanning files and analyzing multi-modal content similarity…")
+            if self.cancel_event.is_set():
+                return
+
+            # Step 1: Detect content relationships & build clusters
             clusters = self.organizer.auto_cluster_folder(
-                folder_path=self.dest_dir,
+                folder_path=self.source_dir,
                 min_similarity=self.threshold,
+                only_relation_clusters=self.only_groups,
             )
-            self.clusters_found.emit(clusters)
+
+            if self.cancel_event.is_set():
+                return
+
+            selected_clusters = [c for c in clusters if c.selected and c.files]
+            if not selected_clusters:
+                self.completed.emit({
+                    "ok": True,
+                    "folder_count": 0,
+                    "moved_count": 0,
+                    "failed_count": 0,
+                    "clusters": [],
+                    "message": "No related file groups found matching the similarity threshold.",
+                })
+                return
+
+            self.progress.emit(
+                35, 100, f"Detected {len(selected_clusters)} group(s). Creating folders and moving files…"
+            )
+
+            # Step 2: Execute moves with progress callbacks
+            def _move_progress(current: int, total: int, msg: str):
+                pct = int(35 + (current / max(total, 1)) * 60)
+                self.progress.emit(pct, 100, msg)
+
+            result = self.organizer.execute_auto_clustering(
+                clusters=selected_clusters,
+                destination_parent_dir=self.dest_dir,
+                progress_callback=_move_progress,
+                cancel_flag=self.cancel_event,
+            )
+
+            result["clusters"] = selected_clusters
+            self.progress.emit(100, 100, "Organization complete!")
+            self.completed.emit(result)
+
         except Exception as exc:
-            self.cluster_error.emit(str(exc))
+            logger.exception("Error during folder organization: %s", exc)
+            self.error.emit(str(exc))
 
 
 class OrganizeDialog(QDialog):
-    """Dialog for automatic content-based N+M folder organization."""
+    """Intelligent Content-Based File Organization Dialog."""
 
     organization_completed = Signal(dict)
 
@@ -74,290 +137,376 @@ class OrganizeDialog(QDialog):
         self._organizer = organizer_service
         self._current_dir = os.path.abspath(current_dir) if current_dir else os.path.expanduser("~")
         self._open_file_callback = open_file_callback
-        self._clusters: List[ProposedFolderCluster] = []
-        self._worker: Optional[ClusterWorker] = None
+        self._worker: Optional[OrganizeWorkerThread] = None
+        self._last_result: Optional[dict] = None
 
-        self.setWindowTitle("Automatic Content Folder Organization")
-        self.setMinimumSize(920, 640)
+        # Backward-compatibility attribute for legacy callers
+        self.folder_name_edit = QLineEdit("Organized Files")
+
+        self.setWindowTitle("Organize Files into Folders")
+        self.setMinimumSize(880, 560)
         self.setModal(False)
         self._setup_ui()
 
-
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
+        layout.setSpacing(12)
 
-        # Header instructions
-        title_label = QLabel("📁 Automatic Content-Based Folder Organization")
-        title_label.setStyleSheet("font-size: 15px; font-weight: bold; padding: 4px;")
+        # Header description
+        title_label = QLabel("📁 Organize Files into Folders")
+        title_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #1e293b;")
         layout.addWidget(title_label)
 
         desc_label = QLabel(
-            "The system detects content relationships (>= 50% similarity) across workspace files. "
-            "Related files are grouped into N relation folders, while independent files (< 50% similarity) "
-            "are grouped into M dedicated folders named after their core content."
+            "Detects relationships based on file content (text, documents, and images) "
+            "and organizes related files into new folders named after their shared relationship."
         )
         desc_label.setWordWrap(True)
-        desc_label.setStyleSheet("color: #475569; padding-bottom: 8px;")
+        desc_label.setStyleSheet("color: #475569; font-size: 12px; margin-bottom: 4px;")
         layout.addWidget(desc_label)
 
-        # Controls
-        # 1. Similarity Threshold
-        thresh_layout = QHBoxLayout()
-        thresh_lbl = QLabel("Relationship Threshold:")
-        thresh_lbl.setFixedWidth(160)
-        self.threshold_combo = QComboBox()
-        self.threshold_combo.addItem("Strict (50% Overlap Threshold)", 50)
-        self.threshold_combo.addItem("Medium (40% Overlap Threshold)", 40)
-        self.threshold_combo.addItem("High Precision (60% Overlap Threshold)", 60)
-        thresh_layout.addWidget(thresh_lbl)
-        thresh_layout.addWidget(self.threshold_combo, 1)
-        layout.addLayout(thresh_layout)
+        # ----------------- Step 1: Folder Selection -----------------
+        folder_group = QGroupBox("Folder Configuration")
+        folder_layout = QVBoxLayout(folder_group)
 
-        # 2. Destination Parent Directory
-        dest_layout = QHBoxLayout()
-        dest_lbl = QLabel("Destination Location:")
-        dest_lbl.setFixedWidth(160)
+        # Source Folder
+        src_row = QHBoxLayout()
+        src_lbl = QLabel("Source Folder:")
+        src_lbl.setFixedWidth(140)
+        self.source_edit = QLineEdit(self._current_dir)
+        self.source_edit.setToolTip("The folder containing files to be organized")
+        src_browse_btn = QPushButton("Browse…")
+        src_browse_btn.clicked.connect(self._browse_source)
+        src_row.addWidget(src_lbl)
+        src_row.addWidget(self.source_edit, 1)
+        src_row.addWidget(src_browse_btn)
+        folder_layout.addLayout(src_row)
+
+        # Destination Folder
+        dest_row = QHBoxLayout()
+        dest_lbl = QLabel("Destination Folder:")
+        dest_lbl.setFixedWidth(140)
         self.dest_edit = QLineEdit(self._current_dir)
-        browse_btn = QPushButton("Browse...")
-        browse_btn.setAutoDefault(False)
-        browse_btn.setDefault(False)
-        browse_btn.clicked.connect(self._browse_destination)
-        dest_layout.addWidget(dest_lbl)
-        dest_layout.addWidget(self.dest_edit, 1)
-        dest_layout.addWidget(browse_btn)
-        layout.addLayout(dest_layout)
+        self.dest_edit.setToolTip("The folder where organized group folders will be created")
+        dest_browse_btn = QPushButton("Browse…")
+        dest_browse_btn.clicked.connect(self._browse_destination)
+        dest_row.addWidget(dest_lbl)
+        dest_row.addWidget(self.dest_edit, 1)
+        dest_row.addWidget(dest_browse_btn)
+        folder_layout.addLayout(dest_row)
 
-        # Scan button
-        scan_bar = QHBoxLayout()
-        self.scan_btn = QPushButton("🔍 Scan Content & Detect N+M Folder Structure")
-        self.scan_btn.setAutoDefault(False)
-        self.scan_btn.setDefault(False)
-        self.scan_btn.setStyleSheet("font-weight: bold; padding: 6px 14px; background-color: #2563eb; color: white;")
-        self.scan_btn.clicked.connect(self._on_scan)
-        scan_bar.addWidget(self.scan_btn)
-        scan_bar.addStretch(1)
+        layout.addWidget(folder_group)
+
+        # ----------------- Step 2: Options -----------------
+        options_group = QGroupBox("Organization Options")
+        options_layout = QHBoxLayout(options_group)
+
+        thresh_lbl = QLabel("Relationship Threshold:")
+        thresh_lbl.setFixedWidth(150)
+        self.threshold_combo = QComboBox()
+        self.threshold_combo.addItem("Balanced (50% Content Overlap — Recommended)", 50)
+        self.threshold_combo.addItem("Broad (40% Content Overlap — Connects more files)", 40)
+        self.threshold_combo.addItem("Strict (60% Content Overlap — Close matches only)", 60)
+        options_layout.addWidget(thresh_lbl)
+        options_layout.addWidget(self.threshold_combo, 1)
+
+        self.only_groups_check = QCheckBox("Organize related groups only (keeps single files in place)")
+        self.only_groups_check.setChecked(True)
+        self.only_groups_check.setToolTip(
+            "When checked, only groups with 2 or more related files are moved into new folders. "
+            "Single files with no relations remain safely in their original location."
+        )
+        options_layout.addWidget(self.only_groups_check)
+
+        layout.addWidget(options_group)
+
+        # ----------------- Step 3: Progress & Action Button -----------------
+        action_layout = QHBoxLayout()
+
+        self.start_btn = QPushButton("📁 Start Organizing Files")
+        self.start_btn.setMinimumHeight(42)
+        self.start_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2563eb;
+                color: white;
+                font-weight: bold;
+                font-size: 13px;
+                padding: 8px 24px;
+                border-radius: 6px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #1d4ed8;
+            }
+            QPushButton:pressed {
+                background-color: #1e40af;
+            }
+            QPushButton:disabled {
+                background-color: #94a3b8;
+                color: #f1f5f9;
+            }
+        """)
+        self.start_btn.clicked.connect(self._on_start_organization)
+        action_layout.addWidget(self.start_btn, 2)
+
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setMinimumHeight(42)
+        self.cancel_btn.setVisible(False)
+        self.cancel_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ef4444;
+                color: white;
+                font-weight: bold;
+                padding: 8px 18px;
+                border-radius: 6px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #dc2626;
+            }
+        """)
+        self.cancel_btn.clicked.connect(self._on_cancel)
+        action_layout.addWidget(self.cancel_btn, 0)
+
+        layout.addLayout(action_layout)
+
+        # Progress bar & Status
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #cbd5e1;
+                border-radius: 4px;
+                text-align: center;
+                height: 20px;
+            }
+            QProgressBar::chunk {
+                background-color: #2563eb;
+                border-radius: 3px;
+            }
+        """)
+        layout.addWidget(self.progress_bar)
+
         self.status_label = QLabel("")
-        scan_bar.addWidget(self.status_label)
-        layout.addLayout(scan_bar)
+        self.status_label.setStyleSheet("color: #475569; font-weight: 500;")
+        layout.addWidget(self.status_label)
 
-        # Proposed Clusters Table
+        # ----------------- Results Table -----------------
+        results_group = QGroupBox("Organized Groups & Moved Files")
+        results_layout = QVBoxLayout(results_group)
+
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
+        self.table.setColumnCount(4)
         self.table.setHorizontalHeaderLabels([
-            "Select", "Proposed Folder Name", "Group Type", "Overlap %", "File Count", "Matching Files / Reason"
+            "Group / Folder Name", "Relationship %", "File Count", "Files in Group"
         ])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Interactive)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Interactive)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
-        self.table.setColumnWidth(1, 240)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.table.setColumnWidth(0, 260)
         self.table.setAlternatingRowColors(True)
         self.table.cellDoubleClicked.connect(self._on_cell_double_clicked)
-        layout.addWidget(self.table, 1)
+        results_layout.addWidget(self.table)
 
-        # Bottom Actions
+        layout.addWidget(results_group, 1)
+
+        # Bottom Bar
         bottom_bar = QHBoxLayout()
-        self.select_all_btn = QPushButton("Select All")
-        self.select_all_btn.setAutoDefault(False)
-        self.select_all_btn.setDefault(False)
-        self.select_all_btn.clicked.connect(lambda: self._set_all_selected(True))
-
-        self.deselect_all_btn = QPushButton("Deselect All")
-        self.deselect_all_btn.setAutoDefault(False)
-        self.deselect_all_btn.setDefault(False)
-        self.deselect_all_btn.clicked.connect(lambda: self._set_all_selected(False))
-
-        bottom_bar.addWidget(self.select_all_btn)
-        bottom_bar.addWidget(self.deselect_all_btn)
         bottom_bar.addStretch(1)
 
-        self.execute_btn = QPushButton("📁 Create N+M Folders & Move Files")
-        self.execute_btn.setAutoDefault(False)
-        self.execute_btn.setDefault(False)
-        self.execute_btn.setStyleSheet("background-color: #16a34a; color: white; font-weight: bold; padding: 6px 18px;")
-        self.execute_btn.clicked.connect(self._on_execute)
-        self.execute_btn.setEnabled(False)
-
         close_btn = QPushButton("Close")
-        close_btn.setAutoDefault(False)
-        close_btn.setDefault(False)
+        close_btn.setMinimumWidth(90)
         close_btn.clicked.connect(self.accept)
-
-        bottom_bar.addWidget(self.execute_btn)
         bottom_bar.addWidget(close_btn)
+
         layout.addLayout(bottom_bar)
 
-        # Auto-scan destination on dialog launch
-        from PySide6.QtCore import QTimer
-        QTimer.singleShot(100, self._on_scan)
-
-
-        self.threshold_combo.currentIndexChanged.connect(lambda: self._on_scan())
+    # ------------------------------------------------------------------ #
+    # Path Browsing & Validation
+    # ------------------------------------------------------------------ #
+    def _browse_source(self) -> None:
+        init_dir = self.source_edit.text().strip() or self._current_dir
+        path = QFileDialog.getExistingDirectory(self, "Select Source Folder to Organize", init_dir)
+        if path:
+            prev_src = self.source_edit.text().strip()
+            self.source_edit.setText(path)
+            # If destination was pointing to previous source, update it too
+            if self.dest_edit.text().strip() == prev_src:
+                self.dest_edit.setText(path)
 
     def _browse_destination(self) -> None:
-        dir_path = QFileDialog.getExistingDirectory(self, "Select Destination Parent Directory", self.dest_edit.text())
-        if dir_path:
-            self.dest_edit.setText(dir_path)
-            self._on_scan()
+        init_dir = self.dest_edit.text().strip() or self.source_edit.text().strip() or self._current_dir
+        path = QFileDialog.getExistingDirectory(self, "Select Destination Folder for Groups", init_dir)
+        if path:
+            self.dest_edit.setText(path)
 
-    def _on_scan(self) -> None:
-        dest_dir = self.dest_edit.text().strip()
-        if not os.path.isdir(dest_dir):
-            self.status_label.setText("Please select a valid folder directory using Browse...")
-            self.status_label.setStyleSheet("color: #dc2626;")
+    def _validate_inputs(self) -> Tuple[bool, str]:
+        src = self.source_edit.text().strip()
+        dst = self.dest_edit.text().strip()
+
+        if not src:
+            return False, "Please specify a Source Folder containing the files to organize."
+        if not os.path.exists(src):
+            return False, f"Source folder does not exist:\n{src}"
+        if not os.path.isdir(src):
+            return False, f"Source path is not a directory:\n{src}"
+
+        # Check if source has files
+        try:
+            has_files = any(os.path.isfile(os.path.join(src, f)) for f in os.listdir(src) if not f.startswith('.'))
+            if not has_files:
+                return False, f"No files found in source folder:\n{src}\nPlease select a folder that contains files to organize."
+        except Exception as exc:
+            return False, f"Cannot access source folder: {exc}"
+
+        if not dst:
+            return False, "Please specify a Destination Folder where group folders will be created."
+
+        # If destination doesn't exist, try creating it
+        if not os.path.exists(dst):
+            try:
+                os.makedirs(dst, exist_ok=True)
+            except Exception as exc:
+                return False, f"Cannot create destination folder:\n{dst}\nError: {exc}"
+
+        if not os.path.isdir(dst):
+            return False, f"Destination path is not a directory:\n{dst}"
+
+        if not os.access(dst, os.W_OK):
+            return False, f"Destination folder is not writable (permission denied):\n{dst}"
+
+        return True, ""
+
+    # ------------------------------------------------------------------ #
+    # Single-Action Organization Execution
+    # ------------------------------------------------------------------ #
+    def _on_start_organization(self) -> None:
+        valid, err_msg = self._validate_inputs()
+        if not valid:
+            QMessageBox.warning(self, "Validation Error", err_msg)
             return
 
-        threshold = self.threshold_combo.currentData() or 50
-        self.status_label.setText("Scanning & partitioning N+M clusters in background...")
-        self.status_label.setStyleSheet("color: #2563eb;")
-        self.scan_btn.setEnabled(False)
+        src_dir = os.path.abspath(self.source_edit.text().strip())
+        dest_dir = os.path.abspath(self.dest_edit.text().strip())
+        threshold = int(self.threshold_combo.currentData() or 50)
+        only_groups = self.only_groups_check.isChecked()
 
-        # Cancel any previous active worker
-        if self._worker is not None and self._worker.isRunning():
-            self._worker.terminate()
-            self._worker.wait()
+        # Update UI state
+        self.start_btn.setEnabled(False)
+        self.cancel_btn.setVisible(True)
+        self.cancel_btn.setEnabled(True)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.status_label.setStyleSheet("color: #2563eb; font-weight: bold;")
+        self.status_label.setText("Starting content analysis…")
+        self.table.setRowCount(0)
 
-        # Start background worker thread
-        self._worker = ClusterWorker(self._organizer, dest_dir, threshold)
-        self._worker.clusters_found.connect(self._on_scan_finished)
-        self._worker.cluster_error.connect(self._on_scan_error)
+        # Launch worker thread
+        self._worker = OrganizeWorkerThread(
+            organizer=self._organizer,
+            source_dir=src_dir,
+            dest_dir=dest_dir,
+            threshold=threshold,
+            only_groups=only_groups,
+        )
+        self._worker.progress.connect(self._on_worker_progress)
+        self._worker.completed.connect(self._on_worker_completed)
+        self._worker.error.connect(self._on_worker_error)
         self._worker.start()
 
-    def _on_scan_finished(self, clusters: list) -> None:
-        self.scan_btn.setEnabled(True)
-        self._clusters = clusters
-        self._populate_table()
+    def _on_cancel(self) -> None:
+        if self._worker and self._worker.isRunning():
+            self.cancel_btn.setEnabled(False)
+            self.status_label.setText("Cancelling organization…")
+            self._worker.cancel()
 
-        if not clusters:
-            self.status_label.setText("No files found in selected folder. Click Browse... to select a folder with files.")
-            self.status_label.setStyleSheet("color: #ea580c;")
-            self.execute_btn.setEnabled(False)
-        else:
-            num_rel = sum(1 for c in clusters if c.is_relation_cluster)
-            num_ind = sum(1 for c in clusters if not c.is_relation_cluster)
-            self.status_label.setText(f"Detected {len(clusters)} Folders ({num_rel} Relation Groups + {num_ind} Independent Folders)")
-            self.status_label.setStyleSheet("color: #16a34a;")
-            self.execute_btn.setEnabled(True)
+    def _on_worker_progress(self, current: int, total: int, message: str) -> None:
+        self.progress_bar.setValue(current)
+        self.status_label.setText(message)
 
-    def _on_scan_error(self, err_msg: str) -> None:
-        self.scan_btn.setEnabled(True)
-        self.status_label.setText(f"Clustering failed: {err_msg}")
-        self.status_label.setStyleSheet("color: #dc2626;")
+    def _on_worker_completed(self, result: dict) -> None:
+        self.start_btn.setEnabled(True)
+        self.cancel_btn.setVisible(False)
+        self.progress_bar.setVisible(False)
+        self._last_result = result
 
+        moved_count = result.get("moved_count", 0)
+        folder_count = result.get("folder_count", 0)
+        clusters = result.get("clusters", [])
+        errors = result.get("errors", [])
 
-
-    def _populate_table(self) -> None:
+        # Populate results table
         self.table.setRowCount(0)
-        for row_idx, cluster in enumerate(self._clusters):
+        for row_idx, cluster in enumerate(clusters):
             self.table.insertRow(row_idx)
 
-            # Checkbox
-            chk_item = QTableWidgetItem()
-            chk_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
-            chk_item.setCheckState(Qt.Checked if cluster.selected else Qt.Unchecked)
-            self.table.setItem(row_idx, 0, chk_item)
+            # Folder Name
+            name_item = QTableWidgetItem(f"📁 {cluster.folder_name}")
+            name_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            self.table.setItem(row_idx, 0, name_item)
 
-            # Proposed Folder Name (Editable)
-            name_item = QTableWidgetItem(cluster.folder_name)
-            name_item.setFlags(Qt.ItemIsEditable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-            self.table.setItem(row_idx, 1, name_item)
-
-            # Group Type
-            type_str = "🔗 N Relation Cluster" if cluster.is_relation_cluster else "📄 M Independent Folder"
-            type_item = QTableWidgetItem(type_str)
-            type_item.setFlags(Qt.ItemIsEnabled)
-            if cluster.is_relation_cluster:
-                type_item.setForeground(Qt.darkBlue)
-            else:
-                type_item.setForeground(Qt.darkGray)
-            self.table.setItem(row_idx, 2, type_item)
-
-            # Overlap %
-            pct_str = f"{cluster.similarity_percentage}%" if cluster.is_relation_cluster else "0%"
+            # Relationship %
+            pct_str = f"{cluster.similarity_percentage}%" if cluster.is_relation_cluster else "Independent"
             pct_item = QTableWidgetItem(pct_str)
             pct_item.setTextAlignment(Qt.AlignCenter)
             pct_item.setFlags(Qt.ItemIsEnabled)
             if cluster.similarity_percentage >= 50:
                 pct_item.setForeground(Qt.darkGreen)
-            self.table.setItem(row_idx, 3, pct_item)
+            self.table.setItem(row_idx, 1, pct_item)
 
             # File Count
             count_item = QTableWidgetItem(str(len(cluster.files)))
             count_item.setTextAlignment(Qt.AlignCenter)
             count_item.setFlags(Qt.ItemIsEnabled)
-            self.table.setItem(row_idx, 4, count_item)
+            self.table.setItem(row_idx, 2, count_item)
 
-            # Files / Reason
-            file_names = ", ".join(os.path.basename(f) for f in cluster.files[:3])
-            if len(cluster.files) > 3:
-                file_names += f" (+{len(cluster.files)-3} more)"
-            reason_str = f"{file_names} — {cluster.reason}"
-            reason_item = QTableWidgetItem(reason_str)
-            reason_item.setFlags(Qt.ItemIsEnabled)
-            reason_item.setData(Qt.UserRole, cluster.files)
-            self.table.setItem(row_idx, 5, reason_item)
+            # Files in Group
+            file_names = ", ".join(os.path.basename(f) for f in cluster.files)
+            files_item = QTableWidgetItem(file_names)
+            files_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            files_item.setData(Qt.UserRole, cluster.files)
+            self.table.setItem(row_idx, 3, files_item)
 
-    def _set_all_selected(self, checked: bool) -> None:
-        state = Qt.Checked if checked else Qt.Unchecked
-        for row in range(self.table.rowCount()):
-            item = self.table.item(row, 0)
-            if item:
-                item.setCheckState(state)
-
-    def _on_cell_double_clicked(self, row: int, col: int) -> None:
-        reason_item = self.table.item(row, 5)
-        if reason_item:
-            files = reason_item.data(Qt.UserRole)
-            if files and self._open_file_callback:
-                self._open_file_callback(files[0])
-
-    def _on_execute(self) -> None:
-        dest_parent = self.dest_edit.text().strip()
-        if not os.path.isdir(dest_parent):
-            QMessageBox.warning(self, "Invalid Destination", f"Destination directory does not exist:\n{dest_parent}")
-            return
-
-        # Synchronize folder names from editable table column
-        for row in range(self.table.rowCount()):
-            chk = self.table.item(row, 0)
-            name_item = self.table.item(row, 1)
-            if row < len(self._clusters):
-                self._clusters[row].selected = (chk and chk.checkState() == Qt.Checked)
-                if name_item and name_item.text().strip():
-                    self._clusters[row].folder_name = name_item.text().strip()
-
-        selected_clusters = [c for c in self._clusters if c.selected and c.files]
-        if not selected_clusters:
-            QMessageBox.warning(self, "No Clusters Selected", "Please select at least one proposed folder to organize.")
-            return
-
-        total_files = sum(len(c.files) for c in selected_clusters)
-        confirm = QMessageBox.question(
-            self,
-            "Confirm Organization",
-            f"Are you sure you want to create {len(selected_clusters)} folder(s) and move {total_files} file(s) into:\n\n"
-            f"'{dest_parent}'?\n\n"
-            f"Files will be partitioned into N relation folders and M independent folders based on content similarity.",
-            QMessageBox.Yes | QMessageBox.No,
-        )
-        if confirm != QMessageBox.Yes:
-            return
-
-        res = self._organizer.execute_auto_clustering(
-            clusters=selected_clusters,
-            destination_parent_dir=dest_parent,
-        )
-
-        if res.get("ok"):
+        if moved_count > 0:
+            self.status_label.setStyleSheet("color: #16a34a; font-weight: bold;")
+            self.status_label.setText(
+                f"✓ Successfully organized {moved_count} file(s) into {folder_count} group folder(s)!"
+            )
             QMessageBox.information(
                 self,
                 "Organization Complete",
-                f"Successfully created {res['folder_count']} folder(s) and moved {res['moved_count']} file(s) into:\n\n"
-                f"'{dest_parent}'",
+                f"Successfully organized {moved_count} file(s) into {folder_count} group folder(s) in:\n\n"
+                f"'{self.dest_edit.text().strip()}'\n\n"
+                f"The folder structure has been updated.",
             )
-            self.organization_completed.emit(res)
-            self.accept()
+            self.organization_completed.emit(result)
         else:
-            QMessageBox.critical(self, "Organization Failed", res.get("error", "An error occurred."))
+            msg = result.get("message") or "No files were moved."
+            if errors:
+                msg += "\n" + "\n".join(errors[:5])
+            self.status_label.setStyleSheet("color: #d97706; font-weight: bold;")
+            self.status_label.setText(msg)
+            QMessageBox.information(self, "Organization Finished", msg)
+
+    def _on_worker_error(self, err_msg: str) -> None:
+        self.start_btn.setEnabled(True)
+        self.cancel_btn.setVisible(False)
+        self.progress_bar.setVisible(False)
+        self.status_label.setStyleSheet("color: #dc2626; font-weight: bold;")
+        self.status_label.setText(f"Error: {err_msg}")
+        QMessageBox.critical(self, "Organization Error", f"An error occurred during organization:\n\n{err_msg}")
+
+    def _on_cell_double_clicked(self, row: int, col: int) -> None:
+        files_item = self.table.item(row, 3)
+        if files_item:
+            files = files_item.data(Qt.UserRole)
+            if files and self._open_file_callback:
+                self._open_file_callback(files[0])
+
+
+# Aliases for backward compatibility
+OrganizeFileDialog = OrganizeDialog

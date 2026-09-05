@@ -128,7 +128,10 @@ class SQLiteIndexer:
             absolute_path=str(path.resolve()),
             mime_type="application/octet-stream",
             size=item.size,
-            created_date=datetime.fromtimestamp(path.stat().st_ctime),
+            created_date=(
+                __import__("core.file_stat_util", fromlist=["get_file_creation_date"]).get_file_creation_date(str(path.resolve()))
+                or datetime.fromtimestamp(path.stat().st_ctime)
+            ),
             modified_date=datetime.fromtimestamp(path.stat().st_mtime),
             checksum="",
             owner=None

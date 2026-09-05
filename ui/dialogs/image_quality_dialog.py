@@ -97,9 +97,11 @@ class ImageQualityDialog(QDialog):
             f"Score: {result.score:.2f} / 1.00   ·   Label: <b style='color:{color}'>{result.label}</b>"
         )
         self.status_label.setStyleSheet("padding: 4px;")
+        from core.file_stat_util import format_file_size
+
         lines = [
             f"Resolution: {result.width} × {result.height} px  (aspect {result.aspect_ratio:.2f})",
-            f"File size: {result.file_size:,} bytes",
+            f"File size: {format_file_size(result.file_size, include_exact=True)}",
             f"Sharpness: {result.sharpness:.3f}",
             f"Contrast: {result.contrast:.3f}",
             f"Brightness / exposure: {result.brightness:.3f}",

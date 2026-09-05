@@ -101,3 +101,85 @@ class EntityExtractor:
         if not m:
             raise ValueError("No JSON object in response")
         return json.loads(m.group(0))
+
+
+    # ============ PHASE 3.1: ENTITY VALIDATION ============
+    
+    def extract_with_validation(self, text: str, validation_threshold: float = 0.7) -> List:
+        """Extract entities with confidence-based validation."""
+        from typing import List
+        
+        # Extract raw entities
+        raw_entities = self.extract(text)
+        
+        # Validate each entity
+        validated = []
+        for entity in raw_entities:
+            try:
+                confidence = self._validate_entity(entity, text, validation_threshold)
+                
+                if confidence >= validation_threshold:
+                    validated.append({
+                        'name': entity.name,
+                        'type': entity.entity_type,
+                        'confidence': confidence,
+                        'validated': True
+                    })
+            except Exception:
+                pass
+        
+        return validated
+    
+    def _validate_entity(self, entity, original_text: str, confidence_threshold: float = 0.7) -> float:
+        """Validate if extracted entity is truly present and meaningful."""
+        confidence = 0.0
+        
+        entity_text = entity.name if hasattr(entity, 'name') else str(entity)
+        
+        # Check 1: Entity text appears in original
+        if entity_text.lower() in original_text.lower():
+            confidence += 0.35
+        else:
+            return 0.0
+        
+        # Check 2: Known entity type
+        known_types = {'PERSON', 'ORGANIZATION', 'LOCATION', 'DATE', 'PRODUCT', 'CONCEPT', 'EVENT'}
+        entity_type = (entity.entity_type if hasattr(entity, 'entity_type') else 'CONCEPT').upper()
+        if entity_type in known_types:
+            confidence += 0.35
+        else:
+            confidence += 0.10
+        
+        # Check 3: Context plausibility
+        if self._is_entity_context_plausible(entity, original_text):
+            confidence += 0.30
+        
+        return min(1.0, confidence)
+    
+    def _is_entity_context_plausible(self, entity, text: str) -> bool:
+        """Check if entity makes sense in context."""
+        entity_text = entity.name if hasattr(entity, 'name') else str(entity)
+        entity_type = (entity.entity_type if hasattr(entity, 'entity_type') else 'CONCEPT').upper()
+        
+        idx = text.lower().find(entity_text.lower())
+        if idx == -1:
+            return False
+        
+        # Get context window
+        start = max(0, idx - 80)
+        end = min(len(text), idx + len(entity_text) + 80)
+        context = text[start:end].lower()
+        context_words = context.split()
+        
+        # Type-specific context checks
+        if entity_type == 'PERSON':
+            markers = {'mr', 'ms', 'dr', 'prof', 'said', 'told', 'asked', 'named'}
+            return any(m in context_words for m in markers)
+        elif entity_type == 'ORGANIZATION':
+            markers = {'company', 'corp', 'inc', 'said', 'announced', 'founded'}
+            return any(m in context_words for m in markers)
+        elif entity_type == 'LOCATION':
+            markers = {'in', 'from', 'to', 'city', 'country', 'region'}
+            return any(m in context_words for m in markers)
+        
+        return True
