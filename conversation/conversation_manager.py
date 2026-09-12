@@ -236,11 +236,15 @@ class ConversationManager:
                 return []
             matches = store.search_entities(query, limit=3)
             related: List[str] = []
-            filter_set = {os.path.abspath(f) for f in file_filter}
-            filter_dirs = {os.path.dirname(os.path.abspath(f)) for f in file_filter}
+            try:
+                from services.path_utils import norm
+            except Exception:
+                norm = lambda p: os.path.abspath(p or "")  # noqa: E731
+            filter_set = {norm(f) for f in file_filter}
+            filter_dirs = {os.path.dirname(norm(f)) for f in file_filter}
             for m in matches:
                 for rf in store.related_files(m["id"]):
-                    rf_abs = os.path.abspath(rf)
+                    rf_abs = norm(rf)
                     if rf_abs in filter_set or os.path.dirname(rf_abs) in filter_dirs:
                         related.append(rf)
             return related[:10]

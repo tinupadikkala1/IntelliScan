@@ -74,6 +74,7 @@ class InactivityReminderService:
         days: Optional[int] = None,
         max_results: int = 100,
         include_size: bool = True,
+        watched_folder: Optional[str] = None,
     ) -> List[InactiveFileInfo]:
         """Find indexed files that have not been opened for >= threshold_days.
 
@@ -82,6 +83,9 @@ class InactivityReminderService:
             days: Alias for threshold_days (for Phase 2.2 compatibility).
             max_results: Cap on total inactive files returned.
             include_size: Whether to include file size info.
+            watched_folder: When set, only files inside this folder (and its
+                subfolders) are checked. When None or empty, all indexed files
+                are scanned (manual "Check Inactive Files" from the menu).
 
         Returns:
             List of InactiveFileInfo objects sorted by days_inactive descending.
@@ -92,6 +96,9 @@ class InactivityReminderService:
 
         if self._session_factory is None or eff_days <= 0:
             return []
+
+        # Normalise the watched folder path once
+        watch_abs = os.path.abspath(watched_folder) if watched_folder else None
 
         now = datetime.utcnow()
         inactive_list: List[InactiveFileInfo] = []
@@ -105,6 +112,12 @@ class InactivityReminderService:
                 path = row.absolute_path
                 if not path or not os.path.isfile(path):
                     continue
+
+                # Folder-scope filter: skip files outside the watched folder
+                if watch_abs:
+                    abs_path = os.path.abspath(path)
+                    if not (abs_path.startswith(watch_abs + os.sep) or abs_path == watch_abs):
+                        continue
 
                 # Determine the reference access timestamp
                 ref_dt = row.last_opened_at or row.scan_timestamp or row.created_date or row.modified_date

@@ -45,12 +45,25 @@ class OllamaClient:
             self.timeout,
         )
 
-    def generate(self, prompt: str, model: Optional[str] = None) -> str:
+    def generate(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        task_type: Optional[str] = None,
+        temperature: Optional[float] = None,
+        messages: Optional[list] = None,
+    ) -> str:
         """Generate a response from the Ollama model.
 
         Args:
             prompt: The text prompt to send to the model.
             model: Optional model name to override default self.model.
+            task_type: Optional task lane (qa/reasoning/rewrite/...) — routed
+                via ai.llm_router when `model` is None. Preserves old behavior
+                when omitted.
+            temperature: Optional temperature override.
+            messages: Optional prebuilt chat messages (for rerank/RAG with
+                use_cot). When given, `prompt` is ignored for content.
 
         Returns:
             The raw response text from Ollama.
@@ -60,11 +73,29 @@ class OllamaClient:
             TimeoutError: If the request exceeds the timeout.
             RuntimeError: If the API returns a non-200 status code.
         """
+        if model is None and task_type:
+            try:
+                from .llm_router import route as _route
+
+                model = _route(task_type)
+            except Exception:
+                pass
         target_model = model or self.model
+        use_temp = temperature if temperature is not None else self.temperature
         url = f"{self.base_url}/api/chat"
-        payload = {
-            "model": target_model,
-            "messages": [
+        try:
+            from core.config import Config
+
+            from services.compute import ollama_options
+
+            _hw = ollama_options(Config())
+        except Exception:
+            _hw = {}
+        _hw = {**_hw, "temperature": use_temp}
+        if messages:
+            chat_messages = messages
+        else:
+            chat_messages = [
                 {
                     "role": "system",
                     "content": (
@@ -76,11 +107,12 @@ class OllamaClient:
                     "role": "user",
                     "content": prompt
                 }
-            ],
+            ]
+        payload = {
+            "model": target_model,
+            "messages": chat_messages,
             "stream": False,
-            "options": {
-                "temperature": self.temperature,
-            },
+            "options": _hw,
         }
 
         logger.info("Starting chat generation request to %s (model=%s)", url, target_model)

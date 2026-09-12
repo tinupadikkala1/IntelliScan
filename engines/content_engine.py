@@ -199,6 +199,7 @@ class UniversalContentEngine:
 
         blocks: list[ContentBlock] = []
         seen_xrefs: set = set()
+        doc = None
         try:
             doc = fitz.open(file_path)
             for page_num in range(len(doc)):
@@ -218,12 +219,17 @@ class UniversalContentEngine:
                     file_path, page, page_num, 'page', seen_xrefs
                 )
                 blocks.extend(image_blocks)
-            doc.close()
         except Exception as exc:
             logger.error(
                 "ContentEngine: error reading PDF '%s': %s",
                 file_path, exc
             )
+        finally:
+            try:
+                if doc is not None:
+                    doc.close()
+            except Exception:
+                pass
         return blocks
 
     def _extract_pptx(self, file_path: str) -> list[ContentBlock]:
@@ -287,6 +293,7 @@ class UniversalContentEngine:
             return []
 
         blocks: list[ContentBlock] = []
+        wb = None
         try:
             wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
             for sheet_idx, sheet_name in enumerate(wb.sheetnames):
@@ -307,12 +314,17 @@ class UniversalContentEngine:
                         source_label=f'Sheet {sheet_idx + 1}',
                         file_path=file_path,
                     ))
-            wb.close()
         except Exception as exc:
             logger.error(
                 "ContentEngine: error reading XLSX '%s': %s",
                 file_path, exc
             )
+        finally:
+            try:
+                if wb is not None:
+                    wb.close()
+            except Exception:
+                pass
         return blocks
 
     def _extract_csv(self, file_path: str) -> list[ContentBlock]:

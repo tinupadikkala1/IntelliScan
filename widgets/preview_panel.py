@@ -71,6 +71,7 @@ class PreviewPanel(QWidget):
         self.image_label.setAlignment(Qt.AlignCenter)
         self.image_label.setText("")
         self.image_label.setMaximumHeight(300)
+        self.image_label.setMaximumWidth(330)
 
         self.text_edit = QPlainTextEdit()
         self.text_edit.setReadOnly(True)
@@ -223,8 +224,9 @@ class PreviewPanel(QWidget):
         if pixmap.isNull():
             self._show_properties(path)
             return
-        # Cap image to max 300px height, 400px width to prevent overflow
-        max_w, max_h = 400, 300
+        # Locked preview dock is 350px wide (~330 content) — cap inside it
+        # so browsing images never pushes/resizes the file list.
+        max_w, max_h = 320, 300
         self.image_label.setPixmap(
             pixmap.scaled(max_w, max_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         )
@@ -323,7 +325,7 @@ class PreviewPanel(QWidget):
             pass
         if not pixmap.isNull():
             self.image_label.setPixmap(
-                pixmap.scaled(400, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                pixmap.scaled(320, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             )
             self.stack.setCurrentWidget(self.image_label)
         else:

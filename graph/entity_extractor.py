@@ -64,18 +64,19 @@ class EntityExtractor:
             except Exception as exc:
                 logger.debug("Entity extraction parse failed: %s", exc)
 
-        # 2. Heuristic / Pattern-based Fallback (Guarantees entities are always extracted)
+        # 2. Heuristic / Pattern-based Fallback (bounded, low-noise)
         try:
             candidates = re.findall(r'\b[A-Z][a-zA-Z0-9_\-]{2,}(?:\s+[A-Z][a-zA-Z0-9_\-]{2,})*\b', text)
+            _STOP = ('the', 'and', 'for', 'with', 'this', 'that', 'from', 'image', 'file', 'content', 'extracted', 'normalized', 'document', 'text', 'photo', 'picture', 'page', 'table', 'figure', 'chapter', 'section')
             for cand in candidates:
                 cand_clean = cand.strip()
                 norm = normalize_entity_name(cand_clean)
                 if cand_clean and norm not in seen and len(cand_clean) >= 3:
-                    if cand_clean.lower() in ('the', 'and', 'for', 'with', 'this', 'that', 'from', 'image', 'file', 'content', 'extracted', 'normalized'):
+                    if cand_clean.lower() in _STOP:
                         continue
                     seen.add(norm)
                     records.append(EntityRecord(name=cand_clean, entity_type="CONCEPT"))
-                    if len(records) >= 15:
+                    if len(records) >= 10:
                         break
         except Exception as err:
             logger.debug("Heuristic entity extraction failed: %s", err)

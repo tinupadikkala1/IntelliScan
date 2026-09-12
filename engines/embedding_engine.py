@@ -13,7 +13,14 @@ from typing import List, Optional
 import numpy as np
 import requests
 
-from .config import EMBEDDING_DIM, EMBEDDING_MODEL, OLLAMA_BASE_URL
+from .config import (
+    EMBED_BATCH_TIMEOUT,
+    EMBED_MAX_RETRIES,
+    EMBED_TIMEOUT,
+    EMBEDDING_DIM,
+    EMBEDDING_MODEL,
+    OLLAMA_BASE_URL,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +53,22 @@ class EmbeddingEngine:
         self._embed_url = f"{self._base_url}/api/embed"
         self._resources = resources
 
+    def _ollama_options(self) -> dict:
+        """Ollama options from Settings (cpu_threads, gpu offload). Never raises."""
+        try:
+            from core.config import Config
+
+            from services.compute import ollama_options
+
+            return ollama_options(Config())
+        except Exception:
+            try:
+                from services.compute import inference_options
+
+                return inference_options()
+            except Exception:
+                return {}
+
     @property
     def dimension(self) -> int:
         """Return the embedding vector dimension."""
@@ -64,65 +87,81 @@ class EmbeddingEngine:
             logger.warning("Empty text provided for embedding")
             return None
 
-        try:
-            start = time.time()
-            if self._resources is not None:
-                with self._resources.embedding():
+        last_err: Exception | None = None
+        for attempt in range(1, EMBED_MAX_RETRIES + 1):
+            try:
+                start = time.time()
+                if self._resources is not None:
+                    with self._resources.embedding():
+                        response = requests.post(
+                            self._embed_url,
+                            json={"model": self._model, "input": text, "options": self._ollama_options()},
+                            timeout=EMBED_TIMEOUT,
+                        )
+                else:
                     response = requests.post(
                         self._embed_url,
-                        json={"model": self._model, "input": text},
-                        timeout=60,
+                        json={"model": self._model, "input": text, "options": self._ollama_options()},
+                        timeout=EMBED_TIMEOUT,
                     )
-            else:
-                response = requests.post(
-                    self._embed_url,
-                    json={"model": self._model, "input": text},
-                    timeout=60,
-                )
-            elapsed = time.time() - start
+                elapsed = time.time() - start
 
-            if response.status_code != 200:
-                logger.error(
-                    "Ollama embed API error (status %d): %s",
-                    response.status_code,
-                    response.text[:200],
-                )
-                return None
+                if response.status_code != 200:
+                    logger.error(
+                        "Ollama embed API error (status %d): %s",
+                        response.status_code,
+                        response.text[:200],
+                    )
+                    return None
 
-            data = response.json()
-            embeddings = data.get("embeddings")
-            if not embeddings or len(embeddings) == 0:
-                logger.error("No embeddings returned from Ollama")
-                return None
+                data = response.json()
+                embeddings = data.get("embeddings")
+                if not embeddings or len(embeddings) == 0:
+                    logger.error("No embeddings returned from Ollama")
+                    return None
 
-            vector = np.array(embeddings[0], dtype=np.float32)
+                vector = np.array(embeddings[0], dtype=np.float32)
 
-            # Update dimension if model returns different size
-            if vector.shape[0] != self._dimension:
-                logger.info(
-                    "Embedding dimension %d differs from expected %d, adjusting",
+                # Update dimension if model returns different size
+                # (e.g. nomic 768d -> bge-m3 1024d switch)
+                if vector.shape[0] != self._dimension:
+                    logger.info(
+                        "Embedding dimension %d differs from expected %d, adjusting",
+                        vector.shape[0],
+                        self._dimension,
+                    )
+                    self._dimension = vector.shape[0]
+
+                # L2-normalize so FAISS IndexFlatIP inner product == cosine.
+                # Matches New Folder Embedder + FileGraphBuilder expectation.
+                norm = float(np.linalg.norm(vector))
+                if norm > 1e-12:
+                    vector = (vector / norm).astype(np.float32)
+
+                logger.debug(
+                    "Generated embedding (dim=%d) in %.2fs for text[:%d]",
                     vector.shape[0],
-                    self._dimension,
+                    elapsed,
+                    min(len(text), 50),
                 )
-                self._dimension = vector.shape[0]
+                return vector
 
-            logger.debug(
-                "Generated embedding (dim=%d) in %.2fs for text[:%d]",
-                vector.shape[0],
-                elapsed,
-                min(len(text), 50),
-            )
-            return vector
-
-        except requests.ConnectionError:
-            logger.error("Cannot connect to Ollama at %s", self._base_url)
-            return None
-        except requests.Timeout:
-            logger.error("Ollama embedding request timed out")
-            return None
-        except Exception as e:
-            logger.error("Embedding generation failed: %s", e)
-            return None
+            except (requests.ConnectionError, requests.Timeout) as e:
+                last_err = e
+                logger.warning(
+                    "Embedding attempt %d/%d failed (%s), retrying",
+                    attempt,
+                    EMBED_MAX_RETRIES,
+                    e,
+                )
+                if attempt < EMBED_MAX_RETRIES:
+                    time.sleep(min(2**attempt, 8))
+                    continue
+                logger.error("Ollama embedding request failed after retries: %s", e)
+                return None
+            except Exception as e:
+                logger.error("Embedding generation failed: %s", e)
+                return None
 
     def embed_batch(self, texts: List[str]) -> List[Optional[np.ndarray]]:
         """Generate embeddings for a batch of texts.
@@ -158,14 +197,14 @@ class EmbeddingEngine:
                 with self._resources.embedding():
                     response = requests.post(
                         self._embed_url,
-                        json={"model": self._model, "input": non_empty_texts},
-                        timeout=120,
+                        json={"model": self._model, "input": non_empty_texts, "options": self._ollama_options()},
+                        timeout=EMBED_BATCH_TIMEOUT,
                     )
             else:
                 response = requests.post(
                     self._embed_url,
-                    json={"model": self._model, "input": non_empty_texts},
-                    timeout=120,
+                    json={"model": self._model, "input": non_empty_texts, "options": self._ollama_options()},
+                    timeout=EMBED_BATCH_TIMEOUT,
                 )
 
             if response.status_code == 200:
@@ -175,11 +214,15 @@ class EmbeddingEngine:
                     for batch_idx, emb in enumerate(embeddings):
                         orig_idx = non_empty_indices[batch_idx]
                         vector = np.array(emb, dtype=np.float32)
-                        
+
                         # Adjust dimension if mismatch
                         if vector.shape[0] != self._dimension:
                             self._dimension = vector.shape[0]
-                        
+
+                        n = float(np.linalg.norm(vector))
+                        if n > 1e-12:
+                            vector = (vector / n).astype(np.float32)
+
                         results[orig_idx] = vector
                     
                     elapsed = time.time() - start

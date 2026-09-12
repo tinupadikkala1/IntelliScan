@@ -56,6 +56,7 @@ class OrganizeWorkerThread(QThread):
         dest_dir: str,
         threshold: int,
         only_groups: bool,
+        retrieval_engine=None,
     ) -> None:
         super().__init__()
         self.organizer = organizer
@@ -63,6 +64,7 @@ class OrganizeWorkerThread(QThread):
         self.dest_dir = dest_dir
         self.threshold = threshold
         self.only_groups = only_groups
+        self.retrieval_engine = retrieval_engine
         self.cancel_event = threading.Event()
 
     def cancel(self) -> None:
@@ -74,11 +76,12 @@ class OrganizeWorkerThread(QThread):
             if self.cancel_event.is_set():
                 return
 
-            # Step 1: Detect content relationships & build clusters
+            # Step 1: Detect content relationships & build clusters using FAISS embeddings
             clusters = self.organizer.auto_cluster_folder(
                 folder_path=self.source_dir,
                 min_similarity=self.threshold,
                 only_relation_clusters=self.only_groups,
+                retrieval_engine=self.retrieval_engine,
             )
 
             if self.cancel_event.is_set():
@@ -131,10 +134,12 @@ class OrganizeDialog(QDialog):
         organizer_service: FileOrganizerService,
         current_dir: str = "",
         open_file_callback: Optional[Callable[[str], None]] = None,
+        retrieval_engine=None,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._organizer = organizer_service
+        self._retrieval_engine = retrieval_engine
         self._current_dir = os.path.abspath(current_dir) if current_dir else os.path.expanduser("~")
         self._open_file_callback = open_file_callback
         self._worker: Optional[OrganizeWorkerThread] = None
@@ -147,6 +152,7 @@ class OrganizeDialog(QDialog):
         self.setMinimumSize(880, 560)
         self.setModal(False)
         self._setup_ui()
+
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -206,15 +212,17 @@ class OrganizeDialog(QDialog):
         self.threshold_combo = QComboBox()
         self.threshold_combo.addItem("Balanced (50% Content Overlap — Recommended)", 50)
         self.threshold_combo.addItem("Broad (40% Content Overlap — Connects more files)", 40)
+        self.threshold_combo.addItem("Loose (30% Content Overlap — Catches semantic near-matches)", 30)
         self.threshold_combo.addItem("Strict (60% Content Overlap — Close matches only)", 60)
         options_layout.addWidget(thresh_lbl)
         options_layout.addWidget(self.threshold_combo, 1)
 
         self.only_groups_check = QCheckBox("Organize related groups only (keeps single files in place)")
-        self.only_groups_check.setChecked(True)
+        self.only_groups_check.setChecked(False)  # Default OFF — every file gets organized into a folder
         self.only_groups_check.setToolTip(
-            "When checked, only groups with 2 or more related files are moved into new folders. "
-            "Single files with no relations remain safely in their original location."
+            "When unchecked (default), ALL files are placed into folders — "
+            "related files share a folder, unrelated files each get their own dedicated folder.\n"
+            "When checked, only groups with 2+ related files are moved; single files stay in place."
         )
         options_layout.addWidget(self.only_groups_check)
 
@@ -405,18 +413,20 @@ class OrganizeDialog(QDialog):
         self.status_label.setText("Starting content analysis…")
         self.table.setRowCount(0)
 
-        # Launch worker thread
+        # Launch worker thread — pass retrieval_engine so FAISS embeddings are used
         self._worker = OrganizeWorkerThread(
             organizer=self._organizer,
             source_dir=src_dir,
             dest_dir=dest_dir,
             threshold=threshold,
             only_groups=only_groups,
+            retrieval_engine=self._retrieval_engine,
         )
         self._worker.progress.connect(self._on_worker_progress)
         self._worker.completed.connect(self._on_worker_completed)
         self._worker.error.connect(self._on_worker_error)
         self._worker.start()
+
 
     def _on_cancel(self) -> None:
         if self._worker and self._worker.isRunning():

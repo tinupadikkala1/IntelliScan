@@ -106,23 +106,9 @@ class RelationshipExtractor:
         except Exception as exc:
             logger.debug("Relationship extraction parse failed: %s", exc)
 
-        # 2. Heuristic Co-occurrence Fallback
-        if not records and len(known_entities) >= 2:
-            ent_keys = list(known_entities.keys())
-            for i in range(min(len(ent_keys) - 1, 5)):
-                src = ent_keys[i]
-                tgt = ent_keys[i+1]
-                records.append(RelationshipRecord(
-                    source=src.capitalize(),
-                    relation="related_to",
-                    target=tgt.capitalize(),
-                    confidence=0.8,
-                    chunk_id=chunk_id,
-                    file_path=file_path,
-                    source_label=source_label,
-                    source_index=source_index,
-                ))
-
+        # No co-occurrence fallback: fabricated "related_to" edges at 0.8
+        # defeated GRAPH_MIN_CONFIDENCE and produced false graph answers.
+        # Return only LLM-supported relationships.
         return records
 
 

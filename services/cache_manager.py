@@ -140,3 +140,14 @@ class CacheManager:
                 os.remove(os.path.join(self.cache_dir, name))
             except OSError:
                 pass
+
+    def set_budget_mb(self, mb: int) -> None:
+        """Map cache_size_mb to max_entries (avg entry ~256KB) + evict."""
+        try:
+            self.max_entries = max(64, int(mb or 0) * 4)
+        except Exception:
+            self.max_entries = 1024
+        try:
+            self._evict()
+        except Exception:
+            pass

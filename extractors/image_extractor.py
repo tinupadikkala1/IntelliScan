@@ -53,7 +53,7 @@ def caption_image_bytes(data: bytes) -> str:
                 "images": [image_b64],
                 "stream": False,
             },
-            timeout=60,
+            timeout=15,
         )
 
         if response.status_code == 200:
@@ -104,18 +104,19 @@ class ImageExtractor(BaseMultimodalExtractor):
                 confidence=0.8,
             ))
 
-        # Try vision captioning
-        caption = self._extract_caption(file_path)
-        if caption and caption.strip():
-            blocks.append(ContentBlock(
-                text=caption,
-                source_type="caption",
-                source_index=1,
-                source_label="Image Caption",
-                file_path=file_path,
-                modality="image",
-                confidence=0.7,
-            ))
+        # Try vision captioning only when OCR text is absent or very sparse (<50 chars)
+        if not ocr_text or len(ocr_text.strip()) < 50:
+            caption = self._extract_caption(file_path)
+            if caption and caption.strip():
+                blocks.append(ContentBlock(
+                    text=caption,
+                    source_type="caption",
+                    source_index=1,
+                    source_label="Image Caption",
+                    file_path=file_path,
+                    modality="image",
+                    confidence=0.7,
+                ))
 
         if not blocks:
             # Fallback: at minimum, record the filename as content

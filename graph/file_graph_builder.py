@@ -77,7 +77,7 @@ class FileGraphBuilder:
     """Constructs multi-modal file-centric graph nodes and intelligent content relationship edges."""
 
     # Minimum relationship percentage required for an edge to exist in the Knowledge Graph
-    MIN_RELATIONSHIP_PCT: int = 40
+    MIN_RELATIONSHIP_PCT: int = 30  # Lowered from 40 to capture semantic near-matches
 
     @staticmethod
     def extract_file_words(text: str) -> set:
@@ -87,24 +87,114 @@ class FileGraphBuilder:
         return {w for w in words if w not in _GENERIC_STOPWORDS}
 
     @classmethod
-    def calculate_text_similarity_pct(cls, text1: str, text2: str, min_threshold: int = 40) -> int:
+    def compute_embedding_similarity_pct(
+        cls,
+        fp1: str,
+        fp2: str,
+        retrieval_engine,
+        min_threshold: int = 30,
+    ) -> int:
+        """Calculate semantic content similarity using pre-computed FAISS embeddings.
+
+        Fetches the stored chunk vectors for both files directly from the FAISS
+        index (sub-millisecond, no re-embedding needed), averages them into a
+        single file-level vector, and computes the cosine similarity.
+        The index uses IndexFlatIP on L2-normalised vectors so the inner product
+        IS the cosine similarity.
+
+        Returns an integer percentage 0–100, or 0 if embeddings are unavailable.
+        """
+        if retrieval_engine is None:
+            return 0
+        try:
+            evidence = getattr(retrieval_engine, "_evidence", {})
+            vector_engine = getattr(retrieval_engine, "_vector", None)
+            if vector_engine is None or not hasattr(vector_engine, "get_vector_by_chunk_id"):
+                return 0
+
+            def _avg_vec(file_path: str):
+                chunks = [c for c in evidence.values() if c.file_path == file_path]
+                vecs = []
+                for c in chunks:
+                    v = vector_engine.get_vector_by_chunk_id(c.chunk_id)
+                    if v is not None:
+                        vecs.append(v)
+                if not vecs:
+                    return None
+                return np.mean(vecs, axis=0).astype(np.float32)
+
+            v1 = _avg_vec(fp1)
+            v2 = _avg_vec(fp2)
+            if v1 is None or v2 is None:
+                return 0
+
+            norm1 = np.linalg.norm(v1)
+            norm2 = np.linalg.norm(v2)
+            if norm1 < 1e-9 or norm2 < 1e-9:
+                return 0
+
+            cosine = float(np.dot(v1, v2) / (norm1 * norm2))
+            # cosine is in [-1, 1]; map to 0-100%
+            # ALL text/document embeddings tend to cluster in similar regions of the vector
+            # space, so even unrelated documents can achieve cosine of 0.50–0.65.
+            # We use a conservative mapping that treats cosine < 0.65 as unrelated (0%),
+            # which prevents false matches at low thresholds (e.g. 30%).
+            #
+            # Calibrated ranges:
+            #   >= 0.95 → 95-100% (near-duplicate / same document)
+            #   >= 0.80 → 70-94%  (strongly related content)
+            #   >= 0.70 → 50-69%  (moderately related content)
+            #   >= 0.65 → 30-49%  (weakly related but within same topic)
+            #   <  0.65 → 0%      (semantically unrelated)
+            if cosine >= 0.95:
+                pct = 100
+            elif cosine >= 0.80:
+                # 0.80–0.95 → 70–94%
+                pct = int(round(70 + (cosine - 0.80) * (24 / 0.15)))
+            elif cosine >= 0.70:
+                # 0.70–0.80 → 50–69%
+                pct = int(round(50 + (cosine - 0.70) * (19 / 0.10)))
+            elif cosine >= 0.65:
+                # 0.65–0.70 → 30–49%
+                pct = int(round(30 + (cosine - 0.65) * (19 / 0.05)))
+            else:
+                pct = 0
+
+            return pct if pct >= min_threshold else 0
+        except Exception as exc:
+            logger.debug("Embedding similarity failed for %s vs %s: %s", fp1, fp2, exc)
+            return 0
+
+    @classmethod
+    def calculate_text_similarity_pct(cls, text1: str, text2: str, min_threshold: int = 30) -> int:
+        """Fallback bag-of-words similarity used when FAISS embeddings are unavailable."""
         words1 = cls.extract_file_words(text1)
         words2 = cls.extract_file_words(text2)
         if not words1 or not words2:
             return 0
 
         intersection = words1.intersection(words2)
+        # Require at least 4 shared substantive words — 2 was too easy to achieve
+        # between completely unrelated documents that happen to share a couple of
+        # domain words (e.g. "invoice" and "report" both appear in many file types).
         if len(intersection) < 4:
             return 0
 
         union = words1.union(words2)
         jaccard = len(intersection) / float(len(union))
+
+        # Require minimum meaningful Jaccard similarity (15%) before scoring.
+        # Below this the shared words are noise relative to the full vocabulary.
+        if jaccard < 0.15:
+            return 0
+
         min_len = min(len(words1), len(words2))
         overlap_ratio = len(intersection) / float(min_len)
 
         score = (jaccard * 0.4 + overlap_ratio * 0.6)
         pct = int(round(score * 100))
         return pct if pct >= min_threshold else 0
+
 
     @classmethod
     def get_semantic_category(cls, file_path: str, text: str = "") -> str:
@@ -221,13 +311,17 @@ class FileGraphBuilder:
         folder_path: str,
         evidence_map: dict = None,
         min_percentage: int = 40,
+        retrieval_engine=None,
     ) -> dict:
         """Build file nodes and intelligent multi-modal content relationship edges.
 
         Args:
             folder_path: Folder containing the files.
             evidence_map: Optional pre-indexed evidence chunks.
-            min_percentage: Minimum percentage threshold for an edge (must be >= 40%).
+            min_percentage: Minimum percentage threshold for an edge.
+            retrieval_engine: Optional retrieval engine to access FAISS embeddings
+                for semantic similarity (primary method). Falls back to bag-of-words
+                when not provided or when a file has no stored vectors.
 
         Returns:
             {"entities": [nodes], "relationships": [edges]}
@@ -238,6 +332,7 @@ class FileGraphBuilder:
         min_pct = max(min_percentage, cls.MIN_RELATIONSHIP_PCT)
         abs_folder = os.path.abspath(folder_path)
         clip_engine = _get_clip_engine()
+
 
         # 1. Discover files in the active folder (direct files + 1 level depth)
         file_paths: List[str] = []
@@ -390,11 +485,11 @@ class FileGraphBuilder:
 
                 pct = 0
 
-                # Strictly isolate conflicting semantic categories (e.g. SIGNBOARD vs LANDSCAPE vs HUMAN_PORTRAIT)
-                if c1 != "GENERAL" and c2 != "GENERAL" and c1 != c2:
-                    pct = 0
-                else:
-                    # 1. Exact file duplicate check (by size and content)
+                # Category gate (soft): different non-GENERAL categories get
+                # penalized, not zeroed — hard isolate broke real taxonomies.
+                _cross_cat = (c1 != "GENERAL" and c2 != "GENERAL" and c1 != c2)
+                if True:
+                    # 1. Exact file duplicate check (by size and content) → always wins
                     try:
                         if os.path.getsize(fp1) == os.path.getsize(fp2):
                             with open(fp1, 'rb') as f1, open(fp2, 'rb') as f2:
@@ -413,11 +508,24 @@ class FileGraphBuilder:
                                 fp1, fp2, clip_engine=clip_engine, vec1=v1, vec2=v2, min_threshold=min_pct
                             )
                         else:
-                            # Document / Media / Cross-modal: substantive text content similarity
-                            if txt1 and txt2:
-                                pct = cls.calculate_text_similarity_pct(txt1, txt2, min_threshold=min_pct)
+                            # Primary: FAISS embedding cosine similarity (semantic, model-level understanding)
+                            emb_pct = cls.compute_embedding_similarity_pct(
+                                fp1, fp2,
+                                retrieval_engine=retrieval_engine,
+                                min_threshold=min_pct,
+                            )
+                            if emb_pct > 0:
+                                pct = emb_pct
+                            else:
+                                # Fallback: bag-of-words overlap (for unindexed files)
+                                if txt1 and txt2:
+                                    pct = cls.calculate_text_similarity_pct(txt1, txt2, min_threshold=min_pct)
 
-                # 3. Connect only if relationship percentage is at least min_pct (minimum 40%)
+                # Soft cross-category penalty (halve, don't zero)
+                if _cross_cat and 0 < pct < 100:
+                    pct = pct // 2
+
+                # 3. Connect only if relationship percentage is at least min_pct
                 if pct >= min_pct:
                     edges.append({
                         "id": edge_id,
@@ -430,5 +538,10 @@ class FileGraphBuilder:
                     })
                     edge_id += 1
 
-        logger.info("FileGraphBuilder: %d file nodes, %d multi-modal relationship edges built (>= %d%%)", len(nodes), len(edges), min_pct)
+        logger.info(
+            "FileGraphBuilder: %d file nodes, %d multi-modal relationship edges (>= %d%%) "
+            "[embedding-primary, bag-of-words-fallback]",
+            len(nodes), len(edges), min_pct,
+        )
         return {"entities": nodes, "relationships": edges}
+

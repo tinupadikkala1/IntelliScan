@@ -156,7 +156,9 @@ class B1ProgressDialog(QDialog):
 
     def set_current_file(self, file_path: str):
         """Set the current file being processed."""
-        filename = file_path.split('/')[-1] if '/' in file_path else file_path
+        from services.path_utils import basename as _base
+
+        filename = _base(file_path)
         self.current_file_label.setText(f"Processing: {filename}")
 
         # Add to list with timestamp

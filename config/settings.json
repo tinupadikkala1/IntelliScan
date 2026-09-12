@@ -1,10 +1,11 @@
 {
   "general": {
-    "startup_path": "~",
+    "startup_path": "",
     "single_click_open": false,
     "confirm_delete": true,
     "inactivity_reminder_enabled": true,
-    "inactivity_threshold_days": 5
+    "inactivity_threshold_days": 1,
+    "inactivity_reminder_folder": "/home/user/Desktop/IntelliTest"
   },
   "appearance": {
     "theme": "dark",
@@ -22,6 +23,46 @@
     "max_threads": 6,
     "cache_size_mb": 256
   },
+  "models": {
+    "enabled": false,
+    "qwen_model": "qwen-local:latest",
+    "qwen_main": "qwen3:latest",
+    "deepseek_model": "deepseek-r1-1.5b:latest",
+    "embedding_model": "nomic-embed-text",
+    "embedding_dim": 768,
+    "vision_model": "moondream:latest",
+    "light_model": "qwen-local:latest",
+    "rerank_model": "ExpedientFalcon/qwen3-reranker:0.6b-q4_k_m",
+    "whisper_backend": "faster-whisper",
+    "whisper_model": "small"
+  },
+  "compute": {
+    "backend": "auto",
+    "device": "auto",
+    "gpu_enabled": false,
+    "allow_igpu": true,
+    "cpu_threads": 0,
+    "io_workers": 4,
+    "embed_batch": 32,
+    "max_ram_percent": 75.0,
+    "max_vram_percent": 90.0,
+    "low_resource_mode": true
+  },
+  "rag": {
+    "top_k": 8,
+    "min_similarity": 0.35,
+    "max_context_tokens": 3500,
+    "hybrid_search": true,
+    "vector_weight": 0.6,
+    "keyword_weight": 0.4,
+    "max_per_file": 2,
+    "query_rewrite": false,
+    "hyde": false,
+    "crag_enabled": true,
+    "crag_threshold": 0.25,
+    "rerank_enabled": true,
+    "rerank_top_n": 5
+  },
   "plugins": {
     "enabled": []
   },
@@ -29,9 +70,6 @@
     "enabled": false
   },
   "ocr": {
-    "enabled": false
-  },
-  "models": {
     "enabled": false
   },
   "embeddings": {

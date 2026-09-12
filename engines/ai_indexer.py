@@ -158,27 +158,35 @@ class AIFolderIndexer:
         total_chunks = 0
         errors: List[str] = []
 
-        for i, file_path in enumerate(files):
-            # Check cancellation
-            if cancel_event and cancel_event.is_set():
-                logger.info("AI Indexing: cancelled by user")
-                break
+        # --------------------------------------------------------------
+        # Phase 1: Fast pre-filtering against existing index & database
+        # --------------------------------------------------------------
+        # Pre-build a normalised-path → evidence list lookup for O(1) access.
+        # Normalise using realpath+normcase so symlinks, different CWDs, and
+        # case differences on case-insensitive filesystems all resolve to the
+        # same key.  The old per-file linear scan over _evidence was O(N*M)
+        # and the simple == comparison silently missed paths that differed only
+        # in normalisation — the #1 cause of unnecessary re-indexing.
+        def _norm(p: str) -> str:
+            try:
+                return os.path.normcase(os.path.realpath(p))
+            except Exception:
+                return os.path.normcase(os.path.abspath(p))
 
-            # Progress update
-            if self._progress_cb:
-                self._progress_cb(IndexingProgress(
-                    current=i + 1,
-                    total=total,
-                    current_file=os.path.basename(file_path),
-                    status="extracting",
-                ))
+        evidence_by_norm_path: dict[str, list] = {}
+        for chunk in self._retrieval._evidence.values():
+            fp = getattr(chunk, "file_path", None)
+            if fp:
+                key = _norm(fp)
+                evidence_by_norm_path.setdefault(key, []).append(chunk)
 
-            # Check if already indexed and unchanged (verifying SHA-256 file hash)
+        pending_files: List[str] = []
+        for file_path in files:
             abs_path = os.path.abspath(file_path)
-            existing = [
-                c for c in self._retrieval._evidence.values()
-                if c.file_path == abs_path
-            ]
+            norm_path = _norm(abs_path)
+
+            existing = evidence_by_norm_path.get(norm_path, [])
+
             if existing:
                 try:
                     current_hash = self._hash_file(abs_path)
@@ -186,22 +194,169 @@ class AIFolderIndexer:
                     current_hash = ""
 
                 stored_hash = getattr(existing[0], "file_hash", "") or ""
+
                 if current_hash and stored_hash and stored_hash == current_hash:
+                    # File unchanged — skip
                     skipped += 1
                     unchanged_skipped += 1
                     continue
                 elif current_hash and not stored_hash:
+                    # Evidence exists but hash was never persisted (older index).
+                    # Update in-memory and DB so future runs skip correctly.
                     for c in existing:
                         c.file_hash = current_hash
+                    if self._db_store is not None:
+                        try:
+                            self._db_store.update_file_hash(abs_path, current_hash)
+                        except Exception:
+                            pass
                     skipped += 1
                     unchanged_skipped += 1
                     continue
                 else:
                     # Content modified since last indexing: remove stale evidence & re-index
-                    logger.info("File content modified, re-indexing: %s", abs_path)
+                    logger.info("File content modified, will re-index: %s", abs_path)
                     self._remove_file_evidence(abs_path)
+            else:
+                # No in-memory evidence found. Check DB directly as a fallback
+                # (covers the case where hydration hasn't run yet or evidence was
+                # evicted, but the file IS stored in the database from a prior run).
+                if self._db_store is not None:
+                    try:
+                        db_chunks = self._db_store.get_evidence_by_file(abs_path)
+                        if not db_chunks:
+                            # Also try with the normalised real path in case stored path differs
+                            real_path = os.path.realpath(abs_path)
+                            if real_path != abs_path:
+                                db_chunks = self._db_store.get_evidence_by_file(real_path)
+                        if db_chunks:
+                            try:
+                                current_hash = self._hash_file(abs_path)
+                            except Exception:
+                                current_hash = ""
+                            stored_hash = getattr(db_chunks[0], "file_hash", "") or ""
+                            if current_hash and stored_hash and stored_hash == current_hash:
+                                # File is in DB and unchanged — hydrate into memory and skip
+                                for c in db_chunks:
+                                    self._retrieval._evidence[c.chunk_id] = c
+                                skipped += 1
+                                unchanged_skipped += 1
+                                continue
+                            elif current_hash and not stored_hash:
+                                # In DB but no hash stored — update and skip
+                                for c in db_chunks:
+                                    c.file_hash = current_hash
+                                    self._retrieval._evidence[c.chunk_id] = c
+                                try:
+                                    self._db_store.update_file_hash(abs_path, current_hash)
+                                except Exception:
+                                    pass
+                                skipped += 1
+                                unchanged_skipped += 1
+                                continue
+                            else:
+                                # In DB but hash changed — re-index
+                                logger.info("File content modified (DB check), will re-index: %s", abs_path)
+                                self._remove_file_evidence(abs_path)
+                        else:
+                            # --------------------------------------------------------
+                            # Rename detection: file not found by path in memory or DB.
+                            # Compute hash and check if same content exists under a
+                            # different (old) path — that means the file was renamed
+                            # while the app was closed.
+                            # --------------------------------------------------------
+                            try:
+                                current_hash = self._hash_file(abs_path)
+                            except Exception:
+                                current_hash = ""
 
+                            if current_hash:
+                                hash_chunks = self._db_store.get_evidence_by_hash(current_hash)
+                                if hash_chunks:
+                                    old_path = hash_chunks[0].file_path
+                                    old_norm = _norm(old_path)
+                                    # Only treat as rename if the old path no longer exists on disk
+                                    if old_norm != norm_path and not os.path.exists(old_path):
+                                        logger.info(
+                                            "Rename detected: '%s' → '%s' (hash match)",
+                                            os.path.basename(old_path),
+                                            os.path.basename(abs_path),
+                                        )
+                                        # Update DB: change file_path everywhere
+                                        self._db_store.update_file_path(old_path, abs_path)
+                                        # Update in-memory evidence to new path
+                                        for c in hash_chunks:
+                                            c.file_path = abs_path
+                                            self._retrieval._evidence[c.chunk_id] = c
+                                        # Update the normalised-path lookup for this run
+                                        evidence_by_norm_path.pop(old_norm, None)
+                                        evidence_by_norm_path[norm_path] = hash_chunks
+                                        # Also update the indexed_files metadata table
+                                        try:
+                                            from services.sqlite_indexer import IndexedFile
+                                            with self._db_store._session_factory() as session:
+                                                row = session.query(IndexedFile).filter_by(
+                                                    absolute_path=old_path
+                                                ).first()
+                                                if row:
+                                                    row.absolute_path = abs_path
+                                                    row.filename = os.path.basename(abs_path)
+                                                    session.commit()
+                                        except Exception:
+                                            pass
+                                        skipped += 1
+                                        unchanged_skipped += 1
+                                        continue
+                                        # Falls through to pending if no rename match found
+                    except Exception as db_exc:
+                        logger.debug("DB evidence pre-check failed for %s: %s", abs_path, db_exc)
 
+            pending_files.append(file_path)
+
+        pending_total = len(pending_files)
+        logger.info(
+            "AI Indexing: %d/%d files already indexed and up to date, %d pending",
+            unchanged_skipped, total, pending_total,
+        )
+
+        # If all files are already indexed, finish immediately without noisy progress
+        if pending_total == 0:
+            if self._progress_cb:
+                self._progress_cb(IndexingProgress(
+                    current=total,
+                    total=total,
+                    current_file="",
+                    status="done",
+                ))
+            return IndexingResult(
+                total_files=total,
+                indexed_files=0,
+                skipped_files=skipped,
+                total_chunks=0,
+                errors=[],
+                unchanged_skipped=unchanged_skipped,
+                no_content_skipped=0,
+            )
+
+        # --------------------------------------------------------------
+        # Phase 2: Index only genuinely new or modified files
+        # --------------------------------------------------------------
+        for i, file_path in enumerate(pending_files):
+            # Check cancellation
+            if cancel_event and cancel_event.is_set():
+                logger.info("AI Indexing: cancelled by user")
+                break
+
+            abs_path = os.path.abspath(file_path)
+
+            # Progress update reflects only files needing processing
+            if self._progress_cb:
+                self._progress_cb(IndexingProgress(
+                    current=i + 1,
+                    total=pending_total,
+                    current_file=os.path.basename(file_path),
+                    status="extracting",
+                ))
 
             # Index this file transactionally: on failure, clean partial state.
             try:
@@ -209,24 +364,34 @@ class AIFolderIndexer:
                 if chunks_indexed > 0:
                     indexed += 1
                     total_chunks += chunks_indexed
+                    # Periodically save FAISS vector index to safeguard progress
+                    if indexed % 5 == 0:
+                        try:
+                            self._retrieval._vector.save()
+                        except Exception:
+                            pass
                 else:
                     skipped += 1
                     no_content_skipped += 1
             except Exception as e:
                 errors.append(f"{os.path.basename(file_path)}: {e}")
                 logger.error("AI Indexing error for '%s': %s", file_path, e)
-                # Roll back partial state for this file so nothing half-indexed
-                # remains in FAISS or the database.
                 try:
                     self._remove_file_evidence(abs_path)
                 except Exception:
                     pass
 
+        # Final vector index persistence
+        try:
+            self._retrieval._vector.save()
+        except Exception:
+            pass
+
         # Final progress
         if self._progress_cb:
             self._progress_cb(IndexingProgress(
-                current=total,
-                total=total,
+                current=pending_total,
+                total=pending_total,
                 current_file="",
                 status="done",
             ))
@@ -242,8 +407,8 @@ class AIFolderIndexer:
         )
 
         logger.info(
-            "AI Indexing complete: %d/%d files indexed, %d chunks, %d errors",
-            indexed, total, total_chunks, len(errors)
+            "AI Indexing complete: %d/%d files indexed, %d chunks, %d up-to-date, %d errors",
+            indexed, total, total_chunks, unchanged_skipped, len(errors)
         )
         return result
 
@@ -308,8 +473,17 @@ class AIFolderIndexer:
 
 
     def _extract_graph(self, file_path: str, indexed_chunks: List[EvidenceChunk]) -> None:
-        """Graph extraction is handled on-demand by FileGraphBuilder for instant performance."""
-        return
+        """Populate entity graph in background (bounded sample, never blocks indexing)."""
+        if not indexed_chunks or self._graph is None:
+            return
+        try:
+            if not getattr(self._graph, "enabled", True):
+                return
+            # Small sample: first 3 chunks only (was 20 → LLM storm + spam).
+            sample = indexed_chunks[:3]
+            self._graph.index_file(file_path, sample)
+        except Exception as e:
+            logger.debug("Graph extraction skipped for %s: %s", file_path, e)
 
 
     def _index_image(self, file_path: str) -> int:
@@ -469,7 +643,7 @@ class AIFolderIndexer:
         ext = os.path.splitext(fname)[1].lower()
 
         try:
-            file_hash = self._content_engine._hash_file(abs_path)
+            file_hash = self._hash_file(abs_path)
         except Exception:
             file_hash = ""
 
@@ -580,17 +754,20 @@ class AIFolderIndexer:
         """Compute fast, reliable hash of a file for indexing skip checks."""
         try:
             size = os.path.getsize(file_path)
-            mtime = os.path.getmtime(file_path)
-            if size < 2000000:
+            # Standard SHA-256 for files up to 50MB (fast, matches rest of system)
+            if size < 50_000_000:
                 from services.file_identity import calculate_sha256
                 return calculate_sha256(file_path)
             else:
-                # Fast fingerprint for large media/binary files
+                # Content fingerprint for very large files (>50MB) based purely on content bytes
                 import hashlib
                 hasher = hashlib.sha256()
-                hasher.update(f"{size}_{mtime}".encode("utf-8"))
+                hasher.update(str(size).encode("utf-8"))
                 with open(file_path, "rb") as f:
                     hasher.update(f.read(65536))
+                    if size > 131072:
+                        f.seek(-65536, os.SEEK_END)
+                        hasher.update(f.read(65536))
                 return hasher.hexdigest()
         except Exception:
             return ""
@@ -603,29 +780,46 @@ class AIFolderIndexer:
         """Discover all indexable files in a folder sorted by requested priority.
 
         Sequence:
-        1. Images (Rank 1)
-        2. Documents & Text files (Rank 2)
+        1. Documents & Text files (Rank 1 - fast & instant feedback)
+        2. Images (Rank 2)
         3. Audio (Rank 3)
         4. Video (Rank 4)
         5. Others (Rank 5)
         """
         files: List[str] = []
 
+        # Never index our own storage (caused re-index loops + DB WAL feedback).
+        _EXCLUDE_DIRS = {
+            'node_modules', '__pycache__', 'venv', '.git',
+            'build', 'dist', '.cache', 'cache', 'config', 'logs',
+            'trash', '.venv', '.pytest_cache', 'graphify-out',
+        }
+        _EXCLUDE_SUFFIXES = ('.db-shm', '.db-wal', '.db-journal', '.faiss', '.ids', '.tmp', '.part', '.lock')
+
         if recursive:
             for root, dirs, filenames in os.walk(folder_path):
                 dirs[:] = [
                     d for d in dirs
-                    if not d.startswith('.') and d not in (
-                        'node_modules', '__pycache__', 'venv', '.git',
-                        'build', 'dist', '.cache', 'cache',
-                    )
+                    if not d.startswith('.') and d not in _EXCLUDE_DIRS
                 ]
+                # Skip if walking inside our own storage rooted at repo
+                try:
+                    _rel = os.path.relpath(os.path.abspath(root), os.path.abspath(folder_path))
+                except Exception:
+                    _rel = ""
                 for fname in filenames:
                     if fname.startswith('.'):
+                        continue
+                    if fname.startswith('~$'):
                         continue
                     fpath = os.path.join(root, fname)
                     ext = os.path.splitext(fname)[1].lower()
                     if ext in _SKIP_EXT:
+                        continue
+                    _lp = fpath.lower()
+                    if any(_lp.endswith(s) for s in _EXCLUDE_SUFFIXES):
+                        continue
+                    if '/config/' in _lp.replace(os.sep, '/') or _lp.replace(os.sep, '/').endswith('/config'):
                         continue
                     files.append(fpath)
         else:
@@ -642,12 +836,12 @@ class AIFolderIndexer:
 
         def _indexing_priority(fpath: str) -> int:
             ext = os.path.splitext(fpath)[1].lower()
-            if ext in _IMAGE_EXT:
-                return 1
-            elif ext in _TEXT_EXTRACTABLE or ext in (
+            if ext in _TEXT_EXTRACTABLE or ext in (
                 '.txt', '.md', '.markdown', '.pdf', '.docx', '.pptx', '.xlsx',
                 '.csv', '.py', '.json', '.yaml', '.yml', '.xml', '.log', '.ini', '.toml'
             ):
+                return 1
+            elif ext in _IMAGE_EXT:
                 return 2
             elif ext in _AUDIO_EXT:
                 return 3

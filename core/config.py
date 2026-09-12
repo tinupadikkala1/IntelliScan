@@ -18,8 +18,9 @@ DEFAULTS: dict[str, Any] = {
         "startup_path": "~/Desktop",
         "single_click_open": False,
         "confirm_delete": True,
-        "inactivity_reminder_enabled": True,
+        "inactivity_reminder_enabled": False,        # Off by default — user must opt-in
         "inactivity_threshold_days": 14,
+        "inactivity_reminder_folder": "",            # Empty = reminder disabled at startup
     },
 
     "appearance": {
@@ -38,14 +39,57 @@ DEFAULTS: dict[str, Any] = {
         "max_threads": min(2, os.cpu_count() or 2),
         "cache_size_mb": 128,
     },
+    # Modern backend (ported from New Folder complementary project).
+    # UI/UX unchanged — these only tune engines/services underneath.
+    # 8B models excluded by user choice; reasoning lane uses 1.5B.
+    "models": {
+        "enabled": False,
+        "qwen_model": "qwen-local:latest",
+        "qwen_main": "qwen3:latest",
+        "deepseek_model": "deepseek-r1-1.5b:latest",
+        "embedding_model": "nomic-embed-text",
+        "embedding_dim": 768,
+        "vision_model": "moondream:latest",
+        "light_model": "qwen-local:latest",
+        "rerank_model": "ExpedientFalcon/qwen3-reranker:0.6b-q4_k_m",
+        "whisper_backend": "faster-whisper",
+        "whisper_model": "small",
+    },
+    "compute": {
+        "backend": "auto",
+        "device": "auto",
+        "gpu_enabled": True,
+        "allow_igpu": True,
+        "cpu_threads": 0,
+        "io_workers": 4,
+        "embed_batch": 32,
+        "max_ram_percent": 75.0,
+        "max_vram_percent": 90.0,
+        "low_resource_mode": False,
+    },
+    "rag": {
+        "top_k": 8,
+        "min_similarity": 0.35,
+        "max_context_tokens": 3500,
+        "hybrid_search": True,
+        "vector_weight": 0.6,
+        "keyword_weight": 0.4,
+        "max_per_file": 2,
+        "query_rewrite": False,
+        "hyde": False,
+        "crag_enabled": True,
+        "crag_threshold": 0.25,
+        "rerank_enabled": True,
+        "rerank_top_n": 5,
+    },
 
     "plugins": {
         "enabled": [],
     },
     # Reserved for future AI batches (Batch 1-10). Inert in Foundation v1.0.
+    # NOTE: "models"/compute/rag defaults are defined above (modern backend).
     "ai": {"enabled": False},
     "ocr": {"enabled": False},
-    "models": {"enabled": False},
     "embeddings": {"enabled": False},
     "llm": {"enabled": False},
 
@@ -127,8 +171,15 @@ class Config(QObject):
 
     def save(self) -> None:
         self._ensure_file()
-        with open(self._path, "w", encoding="utf-8") as fh:
+        tmp = self._path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(self._data, fh, indent=2)
+            try:
+                fh.flush()
+                os.fsync(fh.fileno())
+            except Exception:
+                pass
+        os.replace(tmp, self._path)
 
     def _ensure_file(self) -> None:
         os.makedirs(os.path.dirname(self._path), exist_ok=True)

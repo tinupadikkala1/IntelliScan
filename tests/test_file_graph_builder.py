@@ -5,7 +5,7 @@ from graph.file_graph_builder import FileGraphBuilder
 
 
 def test_min_relationship_threshold_constant():
-    assert FileGraphBuilder.MIN_RELATIONSHIP_PCT == 40
+    assert FileGraphBuilder.MIN_RELATIONSHIP_PCT == 30
 
 
 def test_calculate_text_similarity_below_threshold():

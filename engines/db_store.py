@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime
 from typing import List, Optional, Set
 
@@ -16,6 +17,26 @@ from database.models import Evidence, SearchHistory, VectorMap
 from .evidence_engine import EvidenceChunk
 
 logger = logging.getLogger(__name__)
+
+
+def _with_retry(fn, what: str = "db write", tries: int = 3):
+    """Retry on 'database is locked' with jitter (QThreadPool-safe)."""
+    import random
+    import time
+
+    last: Exception | None = None
+    for attempt in range(1, tries + 1):
+        try:
+            return fn()
+        except Exception as e:
+            last = e
+            msg = str(e).lower()
+            if "locked" in msg or "busy" in msg:
+                time.sleep(0.05 * attempt + random.random() * 0.05)
+                continue
+            raise
+    assert last is not None
+    raise last
 
 
 class PersistenceError(Exception):
@@ -96,19 +117,25 @@ class EngineDBStore:
         return stored
 
     def get_evidence_by_file(self, file_path: str) -> List[EvidenceChunk]:
-        """Load all evidence chunks for a file.
-
-        Args:
-            file_path: Absolute path of the file.
-
-        Returns:
-            List of EvidenceChunk objects.
-        """
+        """Load all evidence chunks for a file (path-normalized)."""
         try:
+            from services.path_utils import norm as _norm
+
+            _cands = {file_path, _norm(file_path)}
+            try:
+                _cands.add(os.path.realpath(file_path))
+            except Exception:
+                pass
             with self._session_factory() as session:
-                records = session.query(Evidence).filter_by(
-                    file_path=file_path
-                ).all()
+                records = session.query(Evidence).filter(Evidence.file_path.in_(list(_cands))).all()
+                # Fallback scan for case-junction variants (small tables only)
+                if not records:
+                    try:
+                        _t = _norm(file_path)
+                        _all = session.query(Evidence).all()
+                        records = [r for r in _all if _norm(getattr(r, "file_path", "")) == _t]
+                    except Exception:
+                        records = []
                 return [self._record_to_chunk(r) for r in records]
         except Exception as e:
             logger.error("Failed to load evidence for %s: %s", file_path, e)
@@ -154,6 +181,76 @@ class EngineDBStore:
         except Exception as e:
             logger.error("Failed to delete evidence for %s: %s", file_path, e)
             raise PersistenceError(f"Could not delete evidence for {file_path}: {e}") from e
+
+    def update_file_hash(self, file_path: str, new_hash: str) -> None:
+        """Update file_hash for all evidence chunks and vector maps of a file."""
+        if not new_hash:
+            return
+        try:
+            with self._session_factory() as session:
+                session.query(Evidence).filter_by(file_path=file_path).update({"file_hash": new_hash})
+                session.query(VectorMap).filter_by(file_path=file_path).update({"file_hash": new_hash})
+                session.commit()
+        except Exception as e:
+            logger.debug("Failed to update file hash for %s: %s", file_path, e)
+
+    def get_evidence_by_hash(self, file_hash: str) -> List[EvidenceChunk]:
+        """Return all evidence chunks whose file_hash matches the given hash.
+
+        Used for rename detection: if a 'new' file's hash already exists in the
+        DB under a different path, the file was renamed rather than added fresh.
+
+        Args:
+            file_hash: SHA-256 hex digest to look up.
+
+        Returns:
+            List of EvidenceChunk objects (may be from multiple files if there
+            are exact duplicates, though normally just one file).
+        """
+        if not file_hash:
+            return []
+        try:
+            with self._session_factory() as session:
+                records = session.query(Evidence).filter_by(file_hash=file_hash).all()
+                return [self._record_to_chunk(r) for r in records]
+        except Exception as e:
+            logger.debug("get_evidence_by_hash failed for hash %s: %s", file_hash[:8], e)
+            return []
+
+    def update_file_path(self, old_path: str, new_path: str, new_filename: str = "") -> int:
+        """Atomically rename a file's path across evidence and vector_map tables.
+
+        Called when a rename is detected (hash match under a different path).
+        Updates every evidence chunk and vector map row that references old_path
+        to use new_path instead.
+
+        Args:
+            old_path: The previously stored absolute path.
+            new_path: The new absolute path after rename.
+            new_filename: Optional filename override (derived from new_path if omitted).
+
+        Returns:
+            Number of evidence rows updated.
+        """
+        if not old_path or not new_path or old_path == new_path:
+            return 0
+        try:
+            with self._session_factory() as session:
+                ev_count = session.query(Evidence).filter_by(file_path=old_path).update(
+                    {"file_path": new_path}, synchronize_session=False
+                )
+                session.query(VectorMap).filter_by(file_path=old_path).update(
+                    {"file_path": new_path}, synchronize_session=False
+                )
+                session.commit()
+            logger.info(
+                "Rename detected: updated %d evidence rows from '%s' → '%s'",
+                ev_count, os.path.basename(old_path), os.path.basename(new_path),
+            )
+            return ev_count
+        except Exception as e:
+            logger.error("Failed to update file path %s → %s: %s", old_path, new_path, e)
+            return 0
 
     def delete_evidence_by_chunk_ids(self, chunk_ids: Set[str] | List[str]) -> int:
         """Delete evidence records and vector maps matching chunk IDs."""

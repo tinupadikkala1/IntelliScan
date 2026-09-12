@@ -121,8 +121,12 @@ class RAGEngine:
         self._timeout = timeout
         self._resources = resources
         self._session_factory = session_factory
-        # Initialize hallucination detector for safety checking
-        self._hallucination_detector = HallucinationDetector()
+        # Wire embedding engine so semantic alignment is real (was None → 0.5 always).
+        try:
+            _emb = getattr(retrieval_engine, "_embedding", None)
+        except Exception:
+            _emb = None
+        self._hallucination_detector = HallucinationDetector(embedding_engine=_emb)
 
     def _get_user_metadata_text(self, file_path: str) -> str:
         """Fetch user-curated metadata/notes from database if available."""
@@ -522,13 +526,16 @@ class RAGEngine:
         "5. Treat all transcript, vision caption, and document evidence as authoritative."
     )
 
-    def answer_multi(self, question: str, context: str, extra_instructions: str = None) -> str:
+    def answer_multi(self, question: str, context: str, extra_instructions: str = None, use_cot: bool = False) -> str:
         """Generate a grounded answer from cross-document evidence context.
 
         Args:
             question: The user's question.
             context: Evidence context built by MultiDocumentContextBuilder.
             extra_instructions: Optional additional prompt guidance.
+            use_cot: When True, append chain-of-thought instruction (reasoning
+                lane). Fixes `build_rag_prompt() got unexpected use_cot` crash
+                pattern from complementary project.
 
         Returns:
             Generated answer text, or empty string on failure.
@@ -540,7 +547,18 @@ class RAGEngine:
         if extra_instructions:
             system = f"{system}\n{extra_instructions}"
         user_prompt = f"CONTEXT:\n{context}\n\nQUESTION: {question}"
+        if use_cot:
+            user_prompt += (
+                "\n\nThink step by step: identify relevant passages, extract key facts, "
+                "combine across sources, then answer with [n] citations. Internal reasoning only."
+            )
         ans = self._generate(user_prompt, system_prompt=system)
+        try:
+            from conversation.groundedness import strip_think
+
+            ans = strip_think(ans or "")
+        except Exception:
+            pass
         return ans or "No files closely related to your query were found in the indexed workspace."
 
     def resolve_followup(self, question: str, history: str) -> str:
@@ -566,7 +584,12 @@ class RAGEngine:
             "question, nothing else."
         )
         answer = self._generate(prompt)
-        resolved = answer.strip().strip('"')
+        try:
+            from conversation.groundedness import strip_think
+
+            resolved = strip_think(answer or "")
+        except Exception:
+            resolved = (answer or "").strip().strip('"')
         if not resolved:
             return question
         return resolved
@@ -996,8 +1019,10 @@ class RAGEngine:
             remaining = RAG_MAX_CONTEXT - total_chars
             text = r.text[:remaining] if len(r.text) > remaining else r.text
 
-            # Format evidence with source reference
-            source_ref = f"[{r.source_label} | {r.file_path.split('/')[-1]}]"
+            # Format evidence with source reference (OS-safe basename)
+            from services.path_utils import basename as _base
+
+            source_ref = f"[{r.source_label} | {_base(r.file_path)}]"
             context_parts.append(f"{source_ref}:\n{text}")
             total_chars += len(text)
 
@@ -1093,13 +1118,22 @@ class RAGEngine:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
+        try:
+            from core.config import Config
+
+            from services.compute import ollama_options
+
+            _opts = ollama_options(Config())
+        except Exception:
+            _opts = {}
+        _opts = {**_opts, "temperature": self._temperature}
         return requests.post(
             f"{self._base_url}/api/chat",
             json={
                 "model": target_model,
                 "messages": messages,
                 "stream": False,
-                "options": {"temperature": self._temperature},
+                "options": _opts,
             },
             timeout=self._timeout,
         )

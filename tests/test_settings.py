@@ -29,21 +29,19 @@ def test_settings_has_all_tabs(qapp, tmp_path):
     assert "Database" in names
     assert "Plugins" in names
     assert "Performance" in names
-    for reserved in ("AI", "OCR", "Models", "Embeddings", "LLM"):
-        assert reserved in names
+    # Batch 4/5/6/7 + reserved AI tabs intentionally hidden (user request).
+    for hidden in ("Batch 4", "Batch 5", "Batch 6", "Batch 7", "AI", "OCR", "Models", "Embeddings", "LLM"):
+        assert hidden not in names
 
 
 def test_reserved_tabs_present_but_disabled(qapp, tmp_path):
-    from PySide6.QtWidgets import QLineEdit
-
+    # Reserved tabs are hidden, but backend widgets are still constructed
+    # so load/apply keep working when re-enabled.
     cfg, bus, theme, repo, dlg = _settings(qapp, tmp_path)
     names = [dlg.tabs.tabText(i) for i in range(dlg.tabs.count())]
-    idx = names.index("AI")
-    tab = dlg.tabs.widget(idx)
-    # The reserved tab contains disabled line edits (placeholder controls).
-    edits = tab.findChildren(QLineEdit)
-    assert edits
-    assert all(not e.isEnabled() for e in edits)
+    assert "AI" not in names
+    assert hasattr(dlg, "_batch4_hidden")
+    assert hasattr(dlg, "_batch5_hidden")
 
 
 def test_settings_apply_writes_config(qapp, tmp_path):

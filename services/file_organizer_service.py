@@ -102,16 +102,31 @@ class FileOrganizerService:
         folder_path: str,
         min_similarity: int = 50,
         only_relation_clusters: bool = False,
+        retrieval_engine=None,
     ) -> List[ProposedFolderCluster]:
         """Scans folder files, detects pairwise content relationships (>= min_similarity threshold),
         and partitions files into N relation clusters + M independent file items.
+
+        Uses FAISS embedding cosine similarity as the primary comparison method
+        (semantic understanding), with bag-of-words as fallback for unindexed files.
+        Clustering uses average-linkage: merge threshold is the mean similarity across
+        all cross-cluster pairs (not the strict minimum as before).
+
+        ALL files are always placed into some folder — no file is left unorganized.
         """
         if not folder_path or not os.path.isdir(folder_path):
             return []
 
         abs_folder = os.path.abspath(folder_path)
         evidence_map = getattr(self._retrieval, "_evidence", {}) if self._retrieval else {}
-        graph_data = FileGraphBuilder.build_file_graph(abs_folder, evidence_map=evidence_map, min_percentage=min_similarity)
+        # Use provided retrieval_engine, or fall back to self._retrieval
+        _retrieval = retrieval_engine or self._retrieval
+        graph_data = FileGraphBuilder.build_file_graph(
+            abs_folder,
+            evidence_map=evidence_map,
+            min_percentage=min_similarity,
+            retrieval_engine=_retrieval,
+        )
 
         nodes = graph_data.get("entities", [])
         relationships = graph_data.get("relationships", [])
@@ -123,8 +138,8 @@ class FileOrganizerService:
         node_map: Dict[int, dict] = {n["id"]: n for n in nodes}
         path_node_map: Dict[str, int] = {n["file_path"]: n["id"] for n in nodes}
 
-        # Build pairwise similarity lookup
-        sim_matrix: Dict[Tuple[int, int], int] = {}
+        # Build pairwise similarity lookup (only edges that meet threshold)
+        sim_matrix: Dict[tuple, int] = {}
         for rel in relationships:
             pct = rel.get("percentage", 0)
             if pct >= min_similarity:
@@ -136,19 +151,57 @@ class FileOrganizerService:
         def get_edge_pct(u: int, v: int) -> int:
             return sim_matrix.get((u, v), 0)
 
-        # Complete-linkage clustering: every pair in a cluster must have similarity >= min_similarity
+        # ------------------------------------------------------------------ #
+        # Average-linkage clustering
+        # Merge criterion:
+        #   1. Average similarity across ALL cross-cluster pairs (including zero pairs)
+        #      must be >= min_similarity. Using only non-zero pairs was the root cause
+        #      of the "mega-folder" bug — even a single connected pair could force a
+        #      merge of two otherwise unrelated clusters.
+        #   2. A minimum connection density (fraction of pairs that actually have a
+        #      relationship) is required to prevent sparsely-connected clusters from
+        #      merging. The density gate scales with the threshold: stricter thresholds
+        #      require more pairs to be genuinely connected.
+        # ------------------------------------------------------------------ #
         active_clusters: List[List[int]] = [[n["id"]] for n in nodes]
+
+        # Density gate: at least this fraction of cross-cluster pairs must have a
+        # real relationship (non-zero similarity). This prevents two clusters from
+        # merging just because one pair out of many happens to be connected.
+        # At 30% threshold → 40% density; at 50% → 50%; at 60%+ → 60%
+        def _required_density(threshold: int) -> float:
+            if threshold <= 30:
+                return 0.40
+            elif threshold <= 50:
+                return 0.50
+            else:
+                return 0.60
+
+        density_gate = _required_density(min_similarity)
 
         while True:
             best_pair = None
-            best_sim = -1
+            best_avg = -1
 
             for i in range(len(active_clusters)):
                 for j in range(i + 1, len(active_clusters)):
                     c1, c2 = active_clusters[i], active_clusters[j]
-                    min_pair_sim = min(get_edge_pct(u, v) for u in c1 for v in c2)
-                    if min_pair_sim >= min_similarity and min_pair_sim > best_sim:
-                        best_sim = min_pair_sim
+                    cross_sims = [get_edge_pct(u, v) for u in c1 for v in c2]
+                    total_pairs = len(cross_sims)
+                    non_zero = [s for s in cross_sims if s > 0]
+                    if not non_zero:
+                        continue
+
+                    # Density gate: skip if too few pairs are genuinely connected
+                    density = len(non_zero) / total_pairs
+                    if density < density_gate:
+                        continue
+
+                    # Use average over ALL pairs (including zeros) — not just non-zero.
+                    # This accurately reflects how related two clusters really are.
+                    avg_sim = sum(cross_sims) / total_pairs
+                    if avg_sim >= min_similarity and avg_sim > best_avg:
+                        best_avg = avg_sim
                         best_pair = (i, j)
 
             if best_pair is None:
@@ -163,13 +216,14 @@ class FileOrganizerService:
             component_files = [node_map[nid]["file_path"] for nid in c_nodes]
 
             if len(c_nodes) > 1:
-                # N Relation Cluster (all members have >= min_similarity with each other)
+                # N Relation Cluster — multiple files, related by content
                 pair_sims = [
                     get_edge_pct(c_nodes[a], c_nodes[b])
                     for a in range(len(c_nodes))
                     for b in range(a + 1, len(c_nodes))
                 ]
-                avg_pct = int(round(sum(pair_sims) / max(len(pair_sims), 1))) if pair_sims else min_similarity
+                non_zero_sims = [s for s in pair_sims if s > 0]
+                avg_pct = int(round(sum(non_zero_sims) / max(len(non_zero_sims), 1))) if non_zero_sims else min_similarity
                 folder_name = self._generate_cluster_folder_name(
                     component_files, default_suffix="Collection", evidence_map=evidence_map
                 )
@@ -179,12 +233,13 @@ class FileOrganizerService:
                         is_relation_cluster=True,
                         similarity_percentage=max(avg_pct, min_similarity),
                         files=component_files,
-                        reason=f"Content relationship match ({max(avg_pct, min_similarity)}% overlap across {len(component_files)} files)",
+                        reason=f"Content relationship match ({max(avg_pct, min_similarity)}% avg overlap across {len(component_files)} files)",
                         selected=True,
                     )
                 )
-            elif not only_relation_clusters:
-                # M Independent Item
+            else:
+                # M Independent Item — always include and always select
+                # (Every file must be organized — no file left behind)
                 fpath = component_files[0]
                 folder_name = self._generate_single_file_folder_name(fpath, evidence_map=evidence_map)
                 clusters.append(
@@ -193,14 +248,15 @@ class FileOrganizerService:
                         is_relation_cluster=False,
                         similarity_percentage=0,
                         files=[fpath],
-                        reason="Independent content topic (<50% overlap with other files)",
-                        selected=False,
+                        reason="Independent content topic — placed in dedicated folder",
+                        selected=not only_relation_clusters,  # selected unless user explicitly wants groups-only
                     )
                 )
 
-        # Sort clusters: N relation clusters first (by similarity/size), then M independent items
+        # Sort clusters: N relation clusters first (by avg similarity/size), then M independent items
         clusters.sort(key=lambda c: (c.is_relation_cluster, c.similarity_percentage, len(c.files)), reverse=True)
         return clusters
+
 
     def execute_auto_clustering(
         self,
@@ -477,7 +533,7 @@ class FileOrganizerService:
             first_clean = re.sub(r'[\-_0-9]', ' ', first_base).strip()
             title_parts.append(first_clean if first_clean else "Group")
 
-        title_str = " ".join(title_parts) + f" {default_suffix}"
+        title_str = " ".join(title_parts)
         title_str = re.sub(r'[\\/*?:"<>|]', '_', title_str).strip()
         if len(title_str) > 50:
             title_str = title_str[:50].rsplit(' ', 1)[0]
@@ -495,7 +551,7 @@ class FileOrganizerService:
             if len(w) >= 2 and any(c in 'aeiouy' for c in w.lower()):
                 words.append(w.capitalize())
         clean_name = " ".join(words).strip()
-        full_title = f"{clean_name} Folder" if clean_name else f"{base.capitalize()} Folder"
+        full_title = clean_name if clean_name else base.capitalize()
         full_title = re.sub(r'[\\/*?:"<>|]', '_', full_title).strip()
         if len(full_title) > 50:
             full_title = full_title[:50].rsplit(' ', 1)[0]

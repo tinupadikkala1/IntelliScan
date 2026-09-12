@@ -1,0 +1,60 @@
+IntelliScan — Models, Libraries, Windows Install
+================================================
+
+MODELS: 9 active (8 default + 1 optional, no 8B)
+------------------------------------------------
+1. qwen-local:latest (1.8B Q4) — fast lane: QA/tag/rewrite/HyDE
+2. qwen3:latest (4B Q4) — main QA lane (higher quality)
+3. deepseek-r1-1.5b:latest (1.8B) — reasoning lane (<think> stripped)
+4. moondream:latest (1B) — vision caption / VQA
+5. nomic-embed-text (768d) — embeddings default (no reindex)
+6. bge-m3 (1024d) — OPTIONAL multilingual embed (needs reindex)
+7. ExpedientFalcon/qwen3-reranker:0.6b — rerank top-5 (local fallback if off)
+8. faster-whisper small (int8) — speech-to-text (fallback: openai-whisper base)
+9. CLIP ViT-B/32 (512d) + EasyOCR (en+hi) + Tesseract — image search + OCR
+
+LIBRARIES: 18 top-level Python packages
+------------------------------------------------
+Core: PySide6, SQLAlchemy, watchdog, mutagen, requests, numpy,
+      Pillow, PyMuPDF, python-docx, python-pptx, openpyxl,
+      pytesseract, opencv-python, faiss-cpu, torch, torchvision,
+      openai-whisper, clip
+Dev/test: pytest, pytest-qt
+System binaries (not pip): Ollama, ffmpeg, Tesseract-OCR
+
+WINDOWS INSTALL (Windows 10/11, Python 3.12)
+------------------------------------------------
+1. Install Python 3.12 (tick "Add to PATH"), Ollama for Windows,
+   ffmpeg (gyan.dev build) and Tesseract-OCR. Add ffmpeg/bin and
+   Tesseract-OCR to PATH. Verify: ollama --version, ffmpeg -version,
+   tesseract --version.
+
+2. Open PowerShell in the project folder:
+     py -3.12 -m venv venv
+     venv\\Scripts\\Activate.ps1
+     pip install -e .
+   Optional GPU/iGPU:
+     pip install onnxruntime-directml   # NVIDIA/DirectML Windows
+     pip install openvino               # Intel iGPU
+
+3. Pull models (PowerShell):
+     ollama pull nomic-embed-text
+     ollama pull qwen3:latest
+     ollama pull qwen-local:latest
+     ollama pull deepseek-r1-1.5b:latest
+     ollama pull moondream:latest
+     ollama pull ExpedientFalcon/qwen3-reranker:0.6b-q4_k_m
+
+4. Run:
+     venv\\Scripts\\python main.py
+   If Program Files blocks writes, set database.path and cache/ to a
+   writable folder, e.g. %APPDATA%\\IntelliScan.
+
+5. Settings -> Performance -> Scan hardware -> Apply recommended -> Apply.
+   - 16GB + NVIDIA: backend=gpu, GPU on, batch 64-96, cache 512-1024
+   - iGPU only: backend=auto, GPU+iGPU on, batch 32-48
+   - CPU only: backend=cpu, GPU off, batch 32
+   - Weak PC (<8GB): low-resource ON, batch 16-32, cache 128-256
+
+6. Index once: toolbar "Index for AI". First run downloads nothing
+   (all models local); large PDFs take minutes on CPU — timeout is 300s.

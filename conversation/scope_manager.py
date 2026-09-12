@@ -43,31 +43,39 @@ class ScopeManager:
     def path_in_scope(path: str, scope: ChatScope) -> bool:
         if scope.scope_type == "workspace":
             return True
+        try:
+            from services.path_utils import is_within, norm
+        except Exception:
+            norm = lambda p: os.path.abspath(p or "")  # noqa: E731
+            is_within = lambda c, b: os.path.abspath(c).startswith(os.path.abspath(b) + os.sep) or os.path.abspath(c) == os.path.abspath(b)  # noqa: E731
         if scope.scope_type == "file":
-            return os.path.abspath(path) == os.path.abspath(scope.scope_path)
+            return norm(path) == norm(scope.scope_path)
         if scope.scope_type == "folder":
-            base = os.path.abspath(scope.scope_path)
-            return os.path.abspath(path).startswith(base + os.sep) or os.path.abspath(path) == base
+            return is_within(path, scope.scope_path)
         return True
 
     def file_filter(self, scope: ChatScope, evidence_map: Optional[Dict[str, object]] = None) -> Optional[List[str]]:
         """Return the file_path list for retrieval filtering, or None (all)."""
         if scope.scope_type == "workspace" or not scope.scope_path:
             return None
+        try:
+            from services.path_utils import is_within, norm
+        except Exception:
+            norm = lambda p: os.path.abspath(p or "")  # noqa: E731
+            is_within = lambda c, b: os.path.abspath(c).startswith(os.path.abspath(b) + os.sep) or os.path.abspath(c) == os.path.abspath(b)  # noqa: E731
         if scope.scope_type == "file":
-            return [os.path.abspath(scope.scope_path)]
+            return [norm(scope.scope_path)]
         if scope.scope_type == "folder":
             if evidence_map is None:
                 return None  # cannot enumerate without evidence map; caller must supply
-            base = os.path.abspath(scope.scope_path)
             paths = {
-                os.path.abspath(chunk.file_path)
+                norm(chunk.file_path)
                 for chunk in evidence_map.values()
-                if os.path.abspath(chunk.file_path).startswith(base + os.sep) or os.path.abspath(chunk.file_path) == base
+                if is_within(getattr(chunk, "file_path", ""), scope.scope_path)
             }
 
-            if not paths and base in {os.path.abspath(c.file_path) for c in evidence_map.values()}:
-                paths = {base}
+            if not paths and norm(scope.scope_path) in {norm(c.file_path) for c in evidence_map.values()}:
+                paths = {norm(scope.scope_path)}
             return sorted(paths)
         return None
 

@@ -21,16 +21,24 @@ import numpy as np
 
 from .config import (
     AUDIO_EXTENSIONS,
+    CRAG_ENABLED,
+    CRAG_THRESHOLD,
     DOCUMENT_EXTENSIONS,
     EMBED_DOCUMENT_PREFIX,
     EMBED_QUERY_PREFIX,
+    HYBRID_SEARCH_ENABLED,
     IMAGE_EXTENSIONS,
+    KEYWORD_WEIGHT,
     MAX_CHUNKS_PER_FILE,
+    MAX_PER_FILE,
+    RERANK_ENABLED,
+    RERANK_TOP_N,
     RETRIEVAL_DIVERSITY,
     SIMILARITY_HIGH,
     SIMILARITY_MEDIUM,
     SIMILARITY_THRESHOLD,
     TOP_K_DEFAULT,
+    VECTOR_WEIGHT,
     VIDEO_EXTENSIONS,
 )
 from .embedding_engine import EmbeddingEngine
@@ -230,15 +238,42 @@ class RetrievalEngine:
             text = chunk.text
             if "nomic-embed-text" in model_name:
                 text = f"{EMBED_DOCUMENT_PREFIX}{text}"
+            elif "bge-m3" in model_name.lower() or "bge" in model_name.lower():
+                text = f"passage: {text}"
             texts_to_embed.append(text)
 
-        # Generate embeddings in batch (with fallback if embed_batch is mocked as a MagicMock)
-        res = self._embedding.embed_batch(texts_to_embed)
-        from unittest.mock import Mock
-        if isinstance(res, Mock) or not isinstance(res, (list, tuple)):
-            vectors = [self._embedding.embed_text(txt) for txt in texts_to_embed]
+        # Generate embeddings in batches (compute.embed_batch, halved in low-resource)
+        # to avoid huge single POSTs timing out on large PDFs (8MB bug).
+        try:
+            from services.compute import effective_embed_batch
+
+            from core.config import Config as _Cfg  # optional, no hard dep
+
+            try:
+                _batch_size = effective_embed_batch(_Cfg())
+            except Exception:
+                _batch_size = effective_embed_batch(None)
+        except Exception:
+            _batch_size = 32
+
+        vectors: list = []
+        if len(texts_to_embed) <= _batch_size:
+            # Generate embeddings in batch (with fallback if embed_batch is mocked as a MagicMock)
+            res = self._embedding.embed_batch(texts_to_embed)
+            from unittest.mock import Mock
+            if isinstance(res, Mock) or not isinstance(res, (list, tuple)):
+                vectors = [self._embedding.embed_text(txt) for txt in texts_to_embed]
+            else:
+                vectors = res
         else:
-            vectors = res
+            for _i in range(0, len(texts_to_embed), _batch_size):
+                _slice = texts_to_embed[_i : _i + _batch_size]
+                res = self._embedding.embed_batch(_slice)
+                from unittest.mock import Mock
+                if isinstance(res, Mock) or not isinstance(res, (list, tuple)):
+                    vectors.extend([self._embedding.embed_text(t) for t in _slice])
+                else:
+                    vectors.extend(list(res))
 
         for chunk, vector in zip(chunks, vectors):
             if vector is not None:
@@ -289,6 +324,8 @@ class RetrievalEngine:
         model_name = getattr(self._embedding, "_model", "")
         if "nomic-embed-text" in model_name:
             query_text = f"{EMBED_QUERY_PREFIX}{query_text}"
+        elif "bge-m3" in model_name.lower() or "bge" in model_name.lower():
+            query_text = f"query: {query_text}"
         query_vector = self._embedding.embed_text(query_text)
         if query_vector is None:
             logger.error("Failed to generate query embedding")
@@ -526,15 +563,17 @@ class RetrievalEngine:
                 satisfaction_ratio = reqs_satisfied / total_reqs
 
                 # Base score for requirement satisfaction
+                # NOTE: vector-primary — keyword boost capped so paraphrases
+                # without lexical overlap still surface via embeddings.
                 if satisfaction_ratio == 1.0:
                     if fn_reqs_satisfied == total_reqs:
-                        boost = 1.00  # Exact match across all requirements in filename
+                        boost = 0.85  # Exact match across all requirements in filename
                     else:
-                        boost = 0.95  # Complete match in content / caption
+                        boost = 0.75  # Complete match in content / caption
                 elif satisfaction_ratio >= 0.5:
-                    boost = 0.45 + 0.15 * satisfaction_ratio
+                    boost = 0.35 + 0.12 * satisfaction_ratio
                 else:
-                    boost = 0.30
+                    boost = 0.25
 
                 # Priority bonus for clean caption chunks over metadata stubs
                 st = (getattr(chunk, 'source_type', '') or '').lower()
@@ -543,7 +582,7 @@ class RetrievalEngine:
                     boost += 0.02
                 elif st == 'user_metadata' or 'user metadata' in sl:
                     # User-curated metadata/notes are explicit human labels; boost significantly
-                    boost = max(boost, 0.98 if satisfaction_ratio == 1.0 else 0.85)
+                    boost = max(boost, 0.82 if satisfaction_ratio == 1.0 else 0.70)
 
                 # Subject primacy bonus: if opening sentence mentions required concepts,
                 # the document/image is centrally focused on the queried subject.
@@ -570,17 +609,22 @@ class RetrievalEngine:
                 if fn_reqs_satisfied > 0 and satisfaction_ratio == 1.0 and fn_reqs_satisfied < total_reqs:
                     boost += 0.01
 
-                boost = min(1.0, boost)
+                boost = min(0.85, boost)
 
                 if cid not in seen_chunk_ids:
-                    sr = SearchResult(chunk_id=cid, score=boost, rank=len(candidates))
+                    # Keyword-only hit (no vector): down-weight so vector hits win.
+                    sr = SearchResult(chunk_id=cid, score=boost * 0.6, rank=len(candidates))
                     res = self._to_result(chunk, sr, len(candidates))
                     candidates.append(res)
                     seen_chunk_ids.add(cid)
                 else:
                     for r in candidates:
                         if r.chunk_id == cid:
-                            r.score = max(r.score, boost)
+                            # Blend, don't hijack: 0.7 vector + 0.3 keyword.
+                            try:
+                                r.score = 0.7 * float(r.score) + 0.3 * float(boost)
+                            except Exception:
+                                r.score = max(float(getattr(r, "score", 0.0)), float(boost))
                             break
 
         if not candidates:
@@ -617,8 +661,74 @@ class RetrievalEngine:
         # Step 4: Deduplicate by file (keep best score per file)
         deduped = self._deduplicate_by_file(filtered)
 
-        # Step 5: Take top_k results
+        # Step 4.5: Modern hybrid fusion (BM25) — vector primary, keyword support.
+        # Preserves existing booster scores above, blends with lexical signal
+        # so paraphrases without lexical overlap still surface via vectors.
+        if HYBRID_SEARCH_ENABLED and deduped:
+            try:
+                from .bm25 import BM25Retriever
+
+                _bm = BM25Retriever()
+                _bm.rebuild([(r.chunk_id, r.text or "") for r in deduped])
+                _bm_scores = dict(_bm.search(query, k=max(len(deduped), top_k * 2)))
+                if _bm_scores:
+                    _mx_bm = max(_bm_scores.values()) or 1.0
+                    _mx_ve = max((float(r.score) for r in deduped), default=1.0) or 1.0
+                    for r in deduped:
+                        _nv = float(r.score) / _mx_ve
+                        _nb = float(_bm_scores.get(r.chunk_id, 0.0)) / _mx_bm
+                        r.score = float(VECTOR_WEIGHT * _nv + KEYWORD_WEIGHT * _nb)
+                    deduped.sort(key=lambda x: x.score, reverse=True)
+            except Exception as _e:
+                logger.debug("BM25 hybrid fusion skipped: %s", _e)
+
+        # Step 4.6: CRAG-lite grade — if top score is very low, keep results
+        # but flag for caller (no second LLM pass here to stay CPU-safe).
+        if CRAG_ENABLED and deduped:
+            try:
+                _top = max((float(r.score) for r in deduped), default=0.0)
+                if _top < CRAG_THRESHOLD:
+                    logger.info("CRAG: low top score %.3f < %.2f", _top, CRAG_THRESHOLD)
+            except Exception:
+                pass
+
+        # Step 5: Take top_k results (cap per-file diversity already applied)
+        # Respect MAX_PER_FILE modern cap when larger than legacy cap.
         final_results = deduped[:top_k]
+        if MAX_PER_FILE and MAX_PER_FILE < (max_chunks_per_file or MAX_CHUNKS_PER_FILE or 99):
+            _by_file: dict[str, list] = {}
+            for r in final_results:
+                _by_file.setdefault(r.file_path, []).append(r)
+            _trimmed: list = []
+            for _fp, _lst in _by_file.items():
+                _trimmed.extend(_lst[:MAX_PER_FILE])
+            final_results = sorted(_trimmed, key=lambda x: x.score, reverse=True)[:top_k]
+
+        # Step 5.5: Rerank (Ollama qwen3-reranker 0.6B when installed, else local).
+        # Low-resource mode forces local-only (no LLM call).
+        if RERANK_ENABLED and len(final_results) > 1:
+            try:
+                from .reranker import rerank_results as _rerank
+
+                from .config import OLLAMA_BASE_URL, RERANK_MODEL
+
+                try:
+                    from core.config import Config as _RCfg
+
+                    from services.compute import should_use_llm_rerank
+
+                    _use_llm = should_use_llm_rerank(_RCfg())
+                except Exception:
+                    _use_llm = True
+                final_results = _rerank(
+                    query,
+                    final_results,
+                    top_n=min(RERANK_TOP_N or top_k, len(final_results)),
+                    model=RERANK_MODEL if _use_llm else "local-token-overlap",
+                    base_url=OLLAMA_BASE_URL,
+                )
+            except Exception as _e:
+                logger.debug("Rerank skipped: %s", _e)
 
 
         # Update ranks
@@ -852,6 +962,8 @@ class RetrievalEngine:
                 text = chunk.text
                 if "nomic-embed-text" in model_name:
                     text = f"{EMBED_DOCUMENT_PREFIX}{text}"
+                elif "bge-m3" in model_name.lower() or "bge" in model_name.lower():
+                    text = f"passage: {text}"
                 texts_to_embed.append(text)
 
             try:
@@ -909,17 +1021,21 @@ class RetrievalEngine:
         )
 
     def remove_file(self, file_path: str) -> int:
-        """Remove all indexed chunks for a file.
+        """Remove all indexed chunks for a file (path-normalized).
 
-        Args:
-            file_path: Path of the file to remove from the index.
-
-        Returns:
-            Number of chunks removed.
+        Uses normcase(realpath) on both sides so Windows case/junction and
+        symlink variants resolve to the same key (was exact ==, missed dups).
         """
+        def _norm(p: str) -> str:
+            try:
+                return os.path.normcase(os.path.realpath(p))
+            except Exception:
+                return os.path.normcase(os.path.abspath(p))
+
+        target = _norm(file_path)
         chunk_ids_to_remove = {
             cid for cid, chunk in self._evidence.items()
-            if chunk.file_path == file_path
+            if _norm(getattr(chunk, "file_path", "")) == target
         }
         if not chunk_ids_to_remove:
             return 0
@@ -970,11 +1086,68 @@ class RetrievalEngine:
                 )
                 self._vector.remove_by_chunk_ids(missing_in_db)
 
+            # Heal: evidence without vectors (e.g. 536 vs 488 desync).
+            # SAFE MODE: only attempt when Ollama is reachable; never delete DB
+            # evidence on heal failure (keeps re-index possible later).
+            try:
+                _faiss_now = set(self._vector.list_chunk_ids())
+                _missing = [c for c in all_evidence if c.chunk_id not in _faiss_now]
+            except Exception:
+                _missing = []
+            if _missing:
+                try:
+                    _avail = False
+                    try:
+                        _avail = bool(self._embedding.is_available())
+                    except Exception:
+                        _avail = False
+                except Exception:
+                    _avail = False
+                if not _avail:
+                    logger.warning(
+                        "Hydration: %d evidence chunks lack vectors, Ollama down — keeping DB, skip heal",
+                        len(_missing),
+                    )
+                else:
+                    logger.warning("Hydration: %d evidence chunks lack vectors, re-embedding", len(_missing))
+                    try:
+                        from .config import EMBED_DOCUMENT_PREFIX
+
+                        _model = getattr(self._embedding, "_model", "")
+                        _B = 32
+                        for _i in range(0, len(_missing), _B):
+                            _batch = _missing[_i : _i + _B]
+                            _texts = []
+                            for _c in _batch:
+                                _t = _c.text or ""
+                                if "nomic-embed-text" in _model:
+                                    _t = f"{EMBED_DOCUMENT_PREFIX}{_t}"
+                                elif "bge" in _model.lower():
+                                    _t = f"passage: {_t}"
+                                _texts.append(_t)
+                            try:
+                                _vecs = self._embedding.embed_batch(_texts)
+                            except Exception:
+                                _vecs = [None] * len(_batch)
+                            for _c, _v in zip(_batch, _vecs):
+                                try:
+                                    if _v is not None:
+                                        self._vector.add(_c.chunk_id, _v)
+                                    # on failure: KEEP evidence+DB, skip (retry next launch)
+                                except Exception:
+                                    pass
+                        try:
+                            self._vector.save()
+                        except Exception:
+                            pass
+                    except Exception as _he:
+                        logger.debug("Hydration heal skipped: %s", _he)
+
             logger.info(
                 "Hydrated %d evidence chunks into retrieval engine (FAISS vectors: %d)",
-                hydrated, self._vector.size,
+                len(self._evidence), self._vector.size,
             )
-            return hydrated
+            return len(self._evidence)
         except Exception as e:
             logger.error("Evidence hydration failed: %s", e)
             return 0

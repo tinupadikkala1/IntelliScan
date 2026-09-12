@@ -26,8 +26,12 @@ def _load_clip():
     if _clip_model is None:
         import clip
         import torch
-        # Avoid OpenMP conflicts in background threads causing segmentation faults
-        torch.set_num_threads(1)
+        try:
+            from services.compute import resolve_threads
+
+            torch.set_num_threads(max(1, resolve_threads(0)))
+        except Exception:
+            torch.set_num_threads(1)
         logger.info("Loading CLIP ViT-B/32 model...")
         _clip_model, _clip_preprocess = clip.load("ViT-B/32", device="cpu")
         logger.info("CLIP model loaded")
@@ -66,11 +70,17 @@ class CLIPEngine:
             import torch
             from PIL import Image
 
-            torch.set_num_threads(1)
+            try:
+                from services.compute import resolve_threads
+
+                torch.set_num_threads(max(1, resolve_threads(0)))
+            except Exception:
+                torch.set_num_threads(1)
             model, preprocess = _load_clip()
 
-            image = Image.open(image_path).convert("RGB")
-            image_input = preprocess(image).unsqueeze(0)
+            with Image.open(image_path) as _img:
+                image = _img.convert("RGB")
+                image_input = preprocess(image).unsqueeze(0)
 
             with torch.no_grad():
                 image_features = model.encode_image(image_input)
@@ -102,7 +112,12 @@ class CLIPEngine:
             import clip
             import torch
 
-            torch.set_num_threads(1)
+            try:
+                from services.compute import resolve_threads
+
+                torch.set_num_threads(max(1, resolve_threads(0)))
+            except Exception:
+                torch.set_num_threads(1)
             model, _ = _load_clip()
             text_input = clip.tokenize([text], truncate=True)
 

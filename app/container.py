@@ -135,7 +135,28 @@ class Container:
         if self._threads is None:
             max_threads = self.config.get("performance.max_threads", 4)
             self._threads = ThreadManager(max_threads)
+            try:
+                self.apply_performance_settings()
+            except Exception:
+                pass
         return self._threads
+
+    def apply_performance_settings(self) -> dict:
+        """Apply Performance tab system-wide (pool + torch + cache). Safe live."""
+        try:
+            from services.compute import apply_compute_settings
+
+            pool = self._threads.pool if self._threads is not None else None
+            cache = self._cache
+            snap = apply_compute_settings(self._config, pool=pool, cache=cache)
+            try:
+                self._bus.settings_changed.emit("compute.applied")
+            except Exception:
+                pass
+            return snap
+        except Exception as exc:
+            logger.debug("apply_performance_settings skipped: %s", exc)
+            return {}
 
     @property
     def tasks(self) -> TaskManager:
@@ -154,6 +175,13 @@ class Container:
         if self._cache is None:
             cache_dir = os.path.join(os.path.dirname(__file__), "..", "cache")
             self._cache = CacheManager(cache_dir)
+            try:
+                from services.compute import effective_snapshot
+
+                snap = effective_snapshot(self._config)
+                self._cache.set_budget_mb(snap["cache_mb"])
+            except Exception:
+                pass
         return self._cache
 
     @property

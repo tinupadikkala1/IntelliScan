@@ -491,13 +491,30 @@ def run_migrations(engine) -> None:
 
 
 def init_database(path: str):
+    import os
+
     url = f"sqlite:///{path}"
     engine = create_engine(
         url,
         future=True,
         pool_pre_ping=True,
-        connect_args={"check_same_thread": False},
+        connect_args={"check_same_thread": False, "timeout": 30},
     )
+    # WAL + NORMAL + busy_timeout prevents "database is locked" under QThreadPool.
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("PRAGMA journal_mode=WAL;"))
+            conn.execute(text("PRAGMA synchronous=NORMAL;"))
+            conn.execute(text("PRAGMA busy_timeout=5000;"))
+            conn.commit()
+    except Exception as _e:
+        log.debug("SQLite pragmas skipped: %s", _e)
+    try:
+        _dir = os.path.dirname(os.path.abspath(path))
+        if _dir:
+            os.makedirs(_dir, exist_ok=True)
+    except Exception:
+        pass
     Base.metadata.create_all(engine)
     run_migrations(engine)
     return engine

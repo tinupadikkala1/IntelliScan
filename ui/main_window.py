@@ -94,12 +94,12 @@ class MainWindow(QMainWindow):
         central_layout.addWidget(self.breadcrumb)
         central_layout.addWidget(self.explorer, 1)
 
-        # Indexed Files — fixed bottom section (always visible, fixed height)
+        # Indexed Files — removed (no longer required, per user request).
         self._build_sidebar()
         self.docks.set_preview_widget(self.preview)
-        self.docks.add_indexed_files_widget(self.container)
-        self.docks.indexed_files_widget.setFixedHeight(180)
-        central_layout.addWidget(self.docks.indexed_files_widget)
+        # self.docks.add_indexed_files_widget(self.container)
+        # self.docks.indexed_files_widget.setFixedHeight(180)
+        # central_layout.addWidget(self.docks.indexed_files_widget)
 
         self.setCentralWidget(self.central)
 
@@ -161,11 +161,12 @@ class MainWindow(QMainWindow):
     def _build_sidebar(self) -> None:
         splitter = QSplitter(Qt.Vertical)
         splitter.addWidget(self.folder_tree)
-        splitter.addWidget(self.favorites)
-        splitter.addWidget(self.drives)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 1)
-        splitter.setStretchFactor(2, 1)
+        # Favorites + Drives hidden for now (keep file hierarchy only).
+        # splitter.addWidget(self.favorites)
+        # splitter.addWidget(self.drives)
+        splitter.setStretchFactor(0, 1)
+        # splitter.setStretchFactor(1, 1)
+        # splitter.setStretchFactor(2, 1)
         self.docks.set_sidebar_widget(splitter)
 
     def _assemble(self) -> None:
@@ -639,6 +640,11 @@ class MainWindow(QMainWindow):
             self.explorer.set_show_hidden(
                 self.container.config.get("explorer.show_hidden", False)
             )
+        elif key.startswith("performance.") or key.startswith("compute."):
+            try:
+                self.container.apply_performance_settings()
+            except Exception as exc:
+                self.log.debug("Performance live-apply skipped: %s", exc)
 
     def _on_scan_requested(self) -> None:
         """Handle Scan Folder toolbar action - M1"""
@@ -1445,14 +1451,17 @@ class MainWindow(QMainWindow):
 
     @Slot(int, int)
     def _ai_index_progress_update(self, current: int, total: int) -> None:
-
         """Update AI indexing progress dialog safely on Main GUI Thread."""
         dialog = getattr(self, "_ai_index_progress", None)
         if dialog is not None:
             try:
-                percent = int((current / total) * 100) if total > 0 else 0
-                dialog.setValue(percent)
-                dialog.setLabelText(f"Indexing files... ({current}/{total})")
+                if total == 0:
+                    dialog.setValue(100)
+                    dialog.setLabelText("All files are already indexed and up to date!")
+                else:
+                    percent = int((current / total) * 100)
+                    dialog.setValue(percent)
+                    dialog.setLabelText(f"Indexing new/modified files... ({current}/{total})")
             except Exception:
                 pass
 
@@ -1472,16 +1481,20 @@ class MainWindow(QMainWindow):
             self._ai_index_progress = None
 
         if result is None:
-
-
             self.bus.status_message.emit("AI indexing cancelled")
             return
 
-        msg = (
-            f"AI Index complete: {result.indexed_files} files indexed, "
-            f"{result.total_chunks} chunks, "
-            f"{result.skipped_files} skipped"
-        )
+        unchanged = getattr(result, "unchanged_skipped", 0)
+        no_content = getattr(result, "no_content_skipped", 0)
+
+        if result.indexed_files == 0 and unchanged > 0:
+            msg = f"All {unchanged} files are already indexed and up to date."
+        else:
+            msg = (
+                f"AI Index complete: {result.indexed_files} newly indexed, "
+                f"{result.total_chunks} chunks, "
+                f"{unchanged} already up to date"
+            )
         if result.errors:
             msg += f", {len(result.errors)} errors"
         self.bus.status_message.emit(msg)
@@ -1489,18 +1502,22 @@ class MainWindow(QMainWindow):
 
         # Show summary
         from PySide6.QtWidgets import QMessageBox
-        unchanged = getattr(result, "unchanged_skipped", 0)
-        no_content = getattr(result, "no_content_skipped", 0)
-
-        QMessageBox.information(
-            self, "AI Indexing Complete",
-            f"Processed {result.total_files} files in total:\n\n"
-            f"• Newly Indexed / Modified: {result.indexed_files} files ({result.total_chunks} text chunks)\n"
-            f"• Skipped (Unchanged / Already Indexed): {unchanged} files\n"
-            f"• Skipped (No extractable text / Binary / Empty): {no_content} files\n"
-            f"• Errors: {len(result.errors)}\n\n"
-            "All files in the folder are indexed and ready for Semantic Search & Workspace Chat."
-        )
+        if result.indexed_files == 0 and unchanged > 0:
+            QMessageBox.information(
+                self, "AI Index Up to Date",
+                f"All {unchanged} files in this folder are already indexed and up to date in the database.\n\n"
+                f"No new or modified files found to process."
+            )
+        else:
+            QMessageBox.information(
+                self, "AI Indexing Complete",
+                f"Processed {result.total_files} files in total:\n\n"
+                f"• Newly Indexed / Modified: {result.indexed_files} files ({result.total_chunks} text chunks)\n"
+                f"• Already Indexed (Skipped): {unchanged} files\n"
+                f"• No extractable content: {no_content} files\n"
+                f"• Errors: {len(result.errors)}\n\n"
+                "All files in the folder are indexed and ready for Semantic Search & Workspace Chat."
+            )
 
     def _ai_index_error(self, error) -> None:
         """Handle AI indexing error."""
@@ -1963,45 +1980,80 @@ class MainWindow(QMainWindow):
         """File → AI → Find Duplicates for a selected file."""
         from ui.dialogs.duplicate_dialog import DuplicateDialog
 
-        group = self.container.duplicate_engine.find_exact_duplicates_for_file(file_path)
-        groups = [group] if group else []
-        try:
-            similars = self.container.similarity_service.near_duplicates(file_path)
-            for s in similars:
-                if s.file_path and os.path.exists(s.file_path) and s.file_path != file_path:
-                    sim_pct = int(round(s.score * 100))
-                    g = DuplicateGroup(
-                        checksum=f"near_{sim_pct}_{file_path}",
-                        files=[file_path, s.file_path],
-                        total_size=(
-                            os.path.getsize(file_path)
-                            + (os.path.getsize(s.file_path) if os.path.isfile(s.file_path) else 0)
-                        ),
-                    )
-                    groups.append(g)
-        except Exception as exc:
-            self.log.debug("Near duplicate check for file skipped: %s", exc)
-
-        suggestions = []
-        if groups:
-            try:
-                suggestions = self.container.suggestion_engine.suggest_duplicate_removals(groups)
-            except Exception as exc:
-                self.log.debug("Removal suggestions skipped: %s", exc)
+        # Open dialog immediately in loading state, then run scan in background
         dialog = DuplicateDialog(
-            groups,
+            groups=[],
+            is_loading=True,
             file_path=file_path,
             on_open=self._on_file_activated,
             on_compare=self._open_file_comparison,
-            removal_suggestions=suggestions,
             on_removal_accept=self._accept_duplicate_removal,
             on_removal_dismiss=self._dismiss_duplicate_removal,
             parent=self,
         )
         dialog.compare_requested.connect(self._open_file_comparison)
-        dialog.refresh_requested.connect(lambda: self._on_find_duplicates_requested(file_path))
+        dialog.refresh_requested.connect(lambda: self._scan_duplicates_for_file(dialog, file_path))
         dialog.clear_requested.connect(self._on_duplicate_clear_requested)
         dialog.show()
+        self._scan_duplicates_for_file(dialog, file_path)
+
+    def _scan_duplicates_for_file(self, dialog, file_path: str) -> None:
+        """Run exact and near-duplicate scan for a single file in background and update existing dialog."""
+        if not dialog or not dialog.isVisible():
+            return
+
+        dialog.set_loading(True)
+
+        def _do_scan(progress_callback, cancel_event):
+            group = self.container.duplicate_engine.find_exact_duplicates_for_file(file_path)
+            groups = [group] if group else []
+            try:
+                similars = self.container.similarity_service.near_duplicates(file_path)
+                for s in similars:
+                    if s.file_path and os.path.exists(s.file_path) and s.file_path != file_path:
+                        sim_pct = int(round(s.score * 100))
+                        g = DuplicateGroup(
+                            checksum=f"near_{sim_pct}_{file_path}",
+                            files=[file_path, s.file_path],
+                            total_size=(
+                                os.path.getsize(file_path)
+                                + (os.path.getsize(s.file_path) if os.path.isfile(s.file_path) else 0)
+                            ),
+                        )
+                        groups.append(g)
+            except Exception as exc:
+                self.log.debug("Near duplicate check for file skipped: %s", exc)
+
+            suggestions = []
+            if groups:
+                try:
+                    suggestions = self.container.suggestion_engine.suggest_duplicate_removals(groups)
+                except Exception as exc:
+                    self.log.debug("Removal suggestions skipped: %s", exc)
+            return groups, suggestions
+
+        def _on_complete(pair):
+            groups, suggestions = pair or ([], [])
+            if not groups:
+                self.bus.status_message.emit("No duplicate or similar files found")
+            else:
+                self.bus.status_message.emit(
+                    f"Found {len(groups)} duplicate group(s) · "
+                    f"{len(suggestions)} removal suggestion(s)"
+                )
+            if dialog and dialog.isVisible():
+                dialog.set_results(groups, suggestions)
+
+        def _on_error(err):
+            if dialog and dialog.isVisible():
+                dialog.set_loading(False)
+            self.bus.status_message.emit(f"Duplicate scan failed: {err}")
+
+        self.container.tasks.submit(
+            _do_scan, "duplicate_scan_file", None,
+            on_finished=_on_complete,
+            on_error=_on_error,
+        )
 
     # ------------------------------------------------------------------ #
     # B6-04 — duplicate removal execution (approved, reversible)
@@ -2601,24 +2653,40 @@ class MainWindow(QMainWindow):
             organizer_service=self.container.file_organizer_service,
             current_dir=self.current_path,
             open_file_callback=self._on_file_activated,
+            retrieval_engine=self.container.retrieval_engine,
             parent=self,
         )
         dialog.organization_completed.connect(lambda res: self._on_refresh())
         dialog.show()
 
+
     def _on_check_inactive_requested(self, auto_check: bool = False) -> None:
         """Tools → Check Inactive Files... (or auto-check on startup)."""
         from ui.dialogs.inactive_files_dialog import InactiveFilesDialog
 
-        enabled = self.container.config.get("general.inactivity_reminder_enabled", True)
+        enabled = self.container.config.get("general.inactivity_reminder_enabled", False)
         if auto_check and not enabled:
+            return
+
+        # For auto-check, a watched folder MUST be configured.
+        # If none is set, skip silently — user has not opted into folder-specific reminders.
+        watched_folder = self.container.config.get("general.inactivity_reminder_folder", "").strip()
+        if auto_check and not watched_folder:
             return
 
         threshold_days = self.container.config.get("general.inactivity_threshold_days", 14)
         service = self.container.inactivity_reminder_service
 
+        # Auto-check: scope to the watched folder only.
+        # Manual menu trigger: scan all indexed files (no folder restriction).
+        folder_scope = watched_folder if auto_check else None
+
         def _do_check(progress_callback, cancel_event):
-            return service.find_inactive_files(threshold_days=threshold_days, max_results=100)
+            return service.find_inactive_files(
+                threshold_days=threshold_days,
+                max_results=100,
+                watched_folder=folder_scope,
+            )
 
         def _on_complete(inactive_files):
             if not inactive_files:
@@ -2626,8 +2694,9 @@ class MainWindow(QMainWindow):
                     self.bus.status_message.emit(f"No inactive files (>{threshold_days} days) found")
                 return
 
+            scope_label = f" in '{os.path.basename(watched_folder)}'" if folder_scope else ""
             self.bus.status_message.emit(
-                f"🔔 Inactive file alert: {len(inactive_files)} file(s) unopened for >{threshold_days} days"
+                f"🔔 Inactive file alert: {len(inactive_files)} file(s){scope_label} unopened for >{threshold_days} days"
             )
             dialog = InactiveFilesDialog(
                 inactive_files=inactive_files,
@@ -2652,11 +2721,13 @@ class MainWindow(QMainWindow):
             organizer_service=self.container.file_organizer_service,
             current_dir=self.current_path,
             open_file_callback=self._on_file_activated,
+            retrieval_engine=self.container.retrieval_engine,
             parent=self,
         )
         dialog.folder_name_edit.setText("Inactive Files Archive")
         dialog.organization_completed.connect(lambda res: self._on_refresh())
         dialog.show()
+
 
     def _on_cleanup_db_requested(self) -> None:
         """Tools → Clean Database — purge stale records for non-existent files."""

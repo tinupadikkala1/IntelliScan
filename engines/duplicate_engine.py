@@ -56,6 +56,12 @@ class DuplicateEngine:
                     return False
                 return os.path.exists(p) or "pytest" in p or "test_" in p or "/tmp/" in p
 
+            def _norm(p: str) -> str:
+                try:
+                    return os.path.normcase(os.path.realpath(p))
+                except Exception:
+                    return os.path.normcase(os.path.abspath(p))
+
             if folder_path:
                 abs_folder = os.path.abspath(folder_path).rstrip(os.sep)
                 norm_folder = abs_folder + os.sep
@@ -64,10 +70,33 @@ class DuplicateEngine:
                     if _is_valid_path(p):
                         abs_p = os.path.abspath(p)
                         if abs_p == abs_folder or abs_p.startswith(norm_folder):
+                            # Backfill missing checksum so duplicates aren't missed
+                            if not c or len((c or "").strip()) != 64:
+                                try:
+                                    from services.file_identity import calculate_sha256
+
+                                    if os.path.isfile(abs_p) and os.path.getsize(abs_p) < 50_000_000:
+                                        c = calculate_sha256(abs_p) or c
+                                except Exception:
+                                    pass
                             filtered_rows.append((c, p, s))
                 rows = filtered_rows
             else:
-                rows = [(c, p, s) for c, p, s in rows if _is_valid_path(p)]
+                fixed = []
+                for c, p, s in rows:
+                    if not _is_valid_path(p):
+                        continue
+                    if not c or len((c or "").strip()) != 64:
+                        try:
+                            from services.file_identity import calculate_sha256
+
+                            _ap = os.path.abspath(p)
+                            if os.path.isfile(_ap) and os.path.getsize(_ap) < 50_000_000:
+                                c = calculate_sha256(_ap) or c
+                        except Exception:
+                            pass
+                    fixed.append((c, p, s))
+                rows = fixed
 
             by_hash: Dict[str, DuplicateGroup] = {}
             for checksum, path, size in rows:

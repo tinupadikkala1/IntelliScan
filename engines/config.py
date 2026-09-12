@@ -10,10 +10,10 @@ import logging
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------- #
-# Chunking parameters
+# Chunking parameters (modern: larger chunks = fewer embeds, faster, better QA)
 # ---------------------------------------------------------------------- #
-CHUNK_SIZE = 400  # characters per evidence chunk
-CHUNK_OVERLAP = 50  # overlap between adjacent chunks
+CHUNK_SIZE = 800  # characters per evidence chunk (was 400 — caused fracture)
+CHUNK_OVERLAP = 150  # overlap between adjacent chunks (was 50)
 
 # ---------------------------------------------------------------------- #
 # Embedding model configuration
@@ -31,11 +31,17 @@ OLLAMA_BASE_URL = 'http://localhost:11434'
 
 # ---------------------------------------------------------------------- #
 # Models (all configurable from here — no hardcoded model names elsewhere)
+# Modern backend port: 8B excluded, reasoning lane = 1.5B (user choice).
 # ---------------------------------------------------------------------- #
-LLM_MODEL = 'qwen-local:latest'          # Default RAG / direct-answer model
-DEEPSEEK_MODEL = 'deepseek-r1-1.5b:latest' # DeepSeek R1 Distill 1.5B reasoning model
+LLM_MODEL = 'qwen-local:latest'          # Default RAG / direct-answer model (fast lane)
+LLM_MAIN_MODEL = 'qwen3:latest'          # Main QA lane (4B, higher quality, non-8B)
+DEEPSEEK_MODEL = 'deepseek-r1-1.5b:latest' # DeepSeek R1 Distill 1.5B reasoning model (replaces 8B)
 VISION_MODEL = 'moondream:latest'        # image captioning / vision model
-WHISPER_MODEL = 'base'                   # speech transcription model size
+LIGHT_MODEL = 'qwen-local:latest'        # rewrite/HyDE lane (fallback to fast lane)
+RERANK_MODEL = 'ExpedientFalcon/qwen3-reranker:0.6b-q4_k_m'  # reranker (0.6B, CPU-safe)
+WHISPER_MODEL = 'base'                   # speech transcription model size (legacy openai-whisper)
+WHISPER_BACKEND = 'faster-whisper'       # preferred STT backend (uses cached small model)
+WHISPER_SMALL_MODEL = 'small'            # faster-whisper size (tiny|base|small|medium)
 
 SUPPORTED_REASONING_MODELS = [
     {
@@ -43,6 +49,12 @@ SUPPORTED_REASONING_MODELS = [
         "name": "Qwen Local (Fast & Lightweight)",
         "badge": "⚡ Fast",
         "description": "Quick direct answers, low memory footprint",
+    },
+    {
+        "id": "qwen3:latest",
+        "name": "Qwen3 4B (Balanced QA)",
+        "badge": "⭐ Balanced",
+        "description": "Higher-quality answers, non-8B, fits 6.9GB RAM",
     },
     {
         "id": "deepseek-r1-1.5b:latest",
@@ -75,6 +87,21 @@ SIMILARITY_MEDIUM = 0.60
 #     across files over stacking chunks from one file.
 MAX_CHUNKS_PER_FILE = 3
 RETRIEVAL_DIVERSITY = True
+
+# Modern retrieval (ported from New Folder — hybrid RRF + rerank + CRAG).
+# Defaults mirror New Folder/default_settings.yaml:rag. UI Batch4 tab still
+# overrides top_k/threshold at runtime; these are engine fallbacks.
+HYBRID_SEARCH_ENABLED = True
+VECTOR_WEIGHT = 0.6
+KEYWORD_WEIGHT = 0.4
+MAX_PER_FILE = 2
+CRAG_ENABLED = True
+CRAG_THRESHOLD = 0.25
+RERANK_ENABLED = True
+RERANK_TOP_N = 5
+EMBED_TIMEOUT = 300  # seconds (was 60 — caused 500s on 8MB PDFs, see Copilot logs)
+EMBED_BATCH_TIMEOUT = 300
+EMBED_MAX_RETRIES = 3
 
 # ---------------------------------------------------------------------- #
 # Conversations (Batch 4)

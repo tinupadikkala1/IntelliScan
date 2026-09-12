@@ -41,7 +41,8 @@ class SettingsDialog(QDialog):
 
         self.tabs = QTabWidget()
         self._build_functional_tabs()
-        self._build_reserved_tabs()
+        # Reserved AI tabs hidden for now (AI/OCR/Models/Embeddings/LLM) — user asked to hide.
+        # self._build_reserved_tabs()
 
         buttons = QHBoxLayout()
         self.apply_btn = QPushButton("Apply")
@@ -76,10 +77,16 @@ class SettingsDialog(QDialog):
         self.tabs.addTab(self._database, "Database")
         self.tabs.addTab(self._plugins, "Plugins")
         self.tabs.addTab(self._performance_tab(), "Performance")
-        self.tabs.addTab(self._batch4_tab(), "Batch 4")
-        self.tabs.addTab(self._batch5_tab(), "Batch 5")
-        self.tabs.addTab(self._batch6_tab(), "Batch 6")
-        self.tabs.addTab(self._batch7_tab(), "Batch 7")
+        # Batch 4/5/6/7 tabs hidden for now — backend still active, UI hidden per user request.
+        # Keep widgets constructed so load/apply still work if re-enabled.
+        self._batch4_hidden = self._batch4_tab()
+        self._batch5_hidden = self._batch5_tab()
+        self._batch6_hidden = self._batch6_tab()
+        self._batch7_hidden = self._batch7_tab()
+        # self.tabs.addTab(self._batch4_hidden, "Batch 4")
+        # self.tabs.addTab(self._batch5_hidden, "Batch 5")
+        # self.tabs.addTab(self._batch6_hidden, "Batch 6")
+        # self.tabs.addTab(self._batch7_hidden, "Batch 7")
 
     def _build_reserved_tabs(self) -> None:
         for name in ("AI", "OCR", "Models", "Embeddings", "LLM"):
@@ -103,21 +110,53 @@ class SettingsDialog(QDialog):
 
     # ------------------------------------------------------------------ #
     def _general_tab(self) -> QWidget:
+        from PySide6.QtWidgets import QFileDialog
         w = QWidget()
         form = QFormLayout(w)
         self.startup_path = QLineEdit()
         self.single_click = QCheckBox("Open files on single click")
         self.confirm_delete = QCheckBox("Confirm before delete")
-        self.inactivity_reminder_cb = QCheckBox("Enable inactive file reminders")
+
+        # --- Inactivity Reminder Group ---
+        self.inactivity_reminder_cb = QCheckBox("Enable inactive file reminders on startup")
         self.inactivity_threshold_spin = QSpinBox()
         self.inactivity_threshold_spin.setRange(1, 365)
         self.inactivity_threshold_spin.setSuffix(" days")
+
+        # Folder picker row
+        folder_row = QHBoxLayout()
+        self.inactivity_folder_edit = QLineEdit()
+        self.inactivity_folder_edit.setPlaceholderText("No folder set — reminder won't fire on startup")
+        self.inactivity_folder_edit.setToolTip(
+            "Reminders on startup will ONLY check files inside this folder.\n"
+            "Leave empty to disable auto-reminder on startup.\n"
+            "You can still use Tools → Check Inactive Files to scan everything."
+        )
+        browse_btn = QPushButton("Browse…")
+        browse_btn.setFixedWidth(80)
+
+        def _pick_folder():
+            current = self.inactivity_folder_edit.text().strip() or ""
+            path = QFileDialog.getExistingDirectory(self, "Select Folder to Watch for Inactive Files", current)
+            if path:
+                self.inactivity_folder_edit.setText(path)
+
+        browse_btn.clicked.connect(_pick_folder)
+        folder_row.addWidget(self.inactivity_folder_edit, 1)
+        folder_row.addWidget(browse_btn)
+
+        clear_btn = QPushButton("Clear")
+        clear_btn.setFixedWidth(55)
+        clear_btn.setToolTip("Remove the watched folder — disables auto-reminder on startup")
+        clear_btn.clicked.connect(lambda: self.inactivity_folder_edit.clear())
+        folder_row.addWidget(clear_btn)
 
         form.addRow("Startup path", self.startup_path)
         form.addRow(self.single_click)
         form.addRow(self.confirm_delete)
         form.addRow(self.inactivity_reminder_cb)
-        form.addRow("Inactive File Alert Threshold", self.inactivity_threshold_spin)
+        form.addRow("Inactivity alert threshold", self.inactivity_threshold_spin)
+        form.addRow("Watched folder for reminders", folder_row)
         return w
 
 
@@ -166,7 +205,9 @@ class SettingsDialog(QDialog):
 
     def _performance_tab(self) -> QWidget:
         w = QWidget()
-        form = QFormLayout(w)
+        outer = QVBoxLayout(w)
+        form_wrap = QWidget()
+        form = QFormLayout(form_wrap)
         self.max_threads = QSpinBox()
         self.max_threads.setRange(1, 32)
         self.cache_size = QSpinBox()
@@ -174,7 +215,118 @@ class SettingsDialog(QDialog):
         self.cache_size.setSuffix(" MB")
         form.addRow("Max worker threads", self.max_threads)
         form.addRow("Cache size", self.cache_size)
+
+        # --- Compute acceleration (modern backend, Linux+Windows) ---
+        # 0 = auto (all cores). Exposes CPU cores / GPU / iGPU tuning
+        # without changing layout or UX flow.
+        import os as _os
+
+        self.cpu_threads = QSpinBox()
+        self.cpu_threads.setRange(0, max(1, _os.cpu_count() or 8))
+        self.cpu_threads.setSpecialValueText("auto")
+        self.cpu_threads.setToolTip("Caps indexing + BLAS threads (0=auto). Lower to reduce load.")
+        self.embed_batch = QSpinBox()
+        self.embed_batch.setRange(8, 128)
+        self.embed_batch.setToolTip("Ollama embed batch size (32 default, CPU-safe).")
+        self.backend_combo = QComboBox()
+        self.backend_combo.addItems(["auto", "cpu", "gpu", "both"])
+        self.gpu_enabled = QCheckBox("Enable GPU (CUDA/DirectML if installed, else CPU)")
+        self.igpu_enabled = QCheckBox("Allow integrated GPU (low-VRAM / OpenVINO mode)")
+        self.low_resource = QCheckBox("Low-resource mode (smaller batches, less RAM)")
+        form.addRow("CPU cores (0=auto)", self.cpu_threads)
+        form.addRow("Embed batch size", self.embed_batch)
+        form.addRow("Compute backend", self.backend_combo)
+        form.addRow(self.gpu_enabled)
+        form.addRow(self.igpu_enabled)
+        form.addRow(self.low_resource)
+
+        # --- Hardware scan + dynamic suggestion (Linux + Windows) ---
+        hw_box = QGroupBox("Detected hardware + recommendation")
+        hw_lay = QVBoxLayout(hw_box)
+        self.hw_info_label = QLabel("Not scanned yet — click Scan hardware.")
+        self.hw_info_label.setWordWrap(True)
+        self.hw_suggest_label = QLabel("")
+        self.hw_suggest_label.setWordWrap(True)
+        btn_row = QHBoxLayout()
+        self.hw_scan_btn = QPushButton("Scan hardware")
+        self.hw_apply_btn = QPushButton("Apply recommended")
+        self.hw_apply_btn.setEnabled(False)
+        self._hw_recommendation = None
+        btn_row.addWidget(self.hw_scan_btn)
+        btn_row.addWidget(self.hw_apply_btn)
+        btn_row.addStretch(1)
+        hw_lay.addWidget(self.hw_info_label)
+        hw_lay.addLayout(btn_row)
+        hw_lay.addWidget(self.hw_suggest_label)
+        self.hw_scan_btn.clicked.connect(self._on_hw_scan)
+        self.hw_apply_btn.clicked.connect(self._on_hw_apply)
+
+        outer.addWidget(form_wrap)
+        outer.addWidget(hw_box)
         return w
+
+    def _on_hw_scan(self) -> None:
+        try:
+            from services.compute import recommend_settings, scan_hardware
+        except Exception as exc:
+            self.hw_info_label.setText(f"Scan failed: {exc}")
+            return
+        try:
+            hw = scan_hardware()
+        except Exception as exc:
+            self.hw_info_label.setText(f"Scan failed: {exc}")
+            return
+        try:
+            rec = recommend_settings(hw)
+        except Exception as exc:
+            self.hw_info_label.setText(f"Recommendation failed: {exc}")
+            return
+        self._hw_recommendation = rec
+        try:
+            cpu = hw.get("cpu") or {}
+            gpus = hw.get("gpus") or []
+            lines = [
+                f"OS: {hw.get('platform')} | CPU threads: {cpu.get('logical')} "
+                f"(physical {cpu.get('physical') or '?'}) | RAM: {hw.get('ram_gb')} GB"
+            ]
+            if gpus:
+                for g in gpus:
+                    lines.append(f"GPU: {g.get('name')} — {g.get('vram_gb')} GB ({g.get('kind')}/{g.get('via')})")
+            else:
+                lines.append("GPU: none detected (CPU-only)")
+            self.hw_info_label.setText("\n".join(lines))
+            r = rec
+            self.hw_suggest_label.setText(
+                "Recommended: threads={t}, cache={c}MB, batch={b}, backend={be}, "
+                "gpu={g}, igpu={i}, low={l}\n{why}".format(
+                    t=r["performance.max_threads"], c=r["performance.cache_size_mb"],
+                    b=r["compute.embed_batch"], be=r["compute.backend"],
+                    g="on" if r["compute.gpu_enabled"] else "off",
+                    i="on" if r["compute.allow_igpu"] else "off",
+                    l="on" if r["compute.low_resource_mode"] else "off",
+                    why="\n".join("• " + x for x in r.get("_reasons", [])),
+                )
+            )
+            self.hw_apply_btn.setEnabled(True)
+        except Exception as exc:
+            self.hw_info_label.setText(f"Scan failed: {exc}")
+
+    def _on_hw_apply(self) -> None:
+        rec = getattr(self, "_hw_recommendation", None)
+        if not rec:
+            return
+        try:
+            self.max_threads.setValue(int(rec["performance.max_threads"]))
+            self.cache_size.setValue(int(rec["performance.cache_size_mb"]))
+            self.cpu_threads.setValue(0)
+            self.embed_batch.setValue(int(rec["compute.embed_batch"]))
+            self.backend_combo.setCurrentText(str(rec["compute.backend"]))
+            self.gpu_enabled.setChecked(bool(rec["compute.gpu_enabled"]))
+            self.igpu_enabled.setChecked(bool(rec["compute.allow_igpu"]))
+            self.low_resource.setChecked(bool(rec["compute.low_resource_mode"]))
+            self.hw_suggest_label.setText(self.hw_suggest_label.text() + "\nApplied — click Apply to save.")
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ #
     # Batch 4 — Conversations, Retrieval, Knowledge Graph, Agent (§42)
@@ -366,8 +518,9 @@ class SettingsDialog(QDialog):
         self.startup_path.setText(self.config.get("general.startup_path", ""))
         self.single_click.setChecked(self.config.get("general.single_click_open", False))
         self.confirm_delete.setChecked(self.config.get("general.confirm_delete", True))
-        self.inactivity_reminder_cb.setChecked(self.config.get("general.inactivity_reminder_enabled", True))
+        self.inactivity_reminder_cb.setChecked(self.config.get("general.inactivity_reminder_enabled", False))
         self.inactivity_threshold_spin.setValue(self.config.get("general.inactivity_threshold_days", 14))
+        self.inactivity_folder_edit.setText(self.config.get("general.inactivity_reminder_folder", ""))
 
 
         self.theme_combo.setCurrentText(self.config.get("appearance.theme", "dark"))
@@ -378,6 +531,12 @@ class SettingsDialog(QDialog):
         self.db_path.setText(self.config.get("database.path", ""))
         self.max_threads.setValue(self.config.get("performance.max_threads", 4))
         self.cache_size.setValue(self.config.get("performance.cache_size_mb", 256))
+        self.cpu_threads.setValue(int(self.config.get("compute.cpu_threads", 0) or 0))
+        self.embed_batch.setValue(int(self.config.get("compute.embed_batch", 32) or 32))
+        self.backend_combo.setCurrentText(self.config.get("compute.backend", "auto"))
+        self.gpu_enabled.setChecked(bool(self.config.get("compute.gpu_enabled", True)))
+        self.igpu_enabled.setChecked(bool(self.config.get("compute.allow_igpu", True)))
+        self.low_resource.setChecked(bool(self.config.get("compute.low_resource_mode", False)))
 
         self.conv_scope.setCurrentText(self.config.get("batch4.default_scope", "folder"))
         self.conv_history_chars.setValue(self.config.get("batch4.history_chars", 6000))
@@ -428,7 +587,7 @@ class SettingsDialog(QDialog):
         self.config.set("general.confirm_delete", self.confirm_delete.isChecked())
         self.config.set("general.inactivity_reminder_enabled", self.inactivity_reminder_cb.isChecked())
         self.config.set("general.inactivity_threshold_days", self.inactivity_threshold_spin.value())
-
+        self.config.set("general.inactivity_reminder_folder", self.inactivity_folder_edit.text().strip())
 
         theme = self.theme_combo.currentText()
         self.config.set("appearance.theme", theme)
@@ -439,6 +598,12 @@ class SettingsDialog(QDialog):
 
         self.config.set("performance.max_threads", self.max_threads.value())
         self.config.set("performance.cache_size_mb", self.cache_size.value())
+        self.config.set("compute.cpu_threads", self.cpu_threads.value())
+        self.config.set("compute.embed_batch", self.embed_batch.value())
+        self.config.set("compute.backend", self.backend_combo.currentText())
+        self.config.set("compute.gpu_enabled", self.gpu_enabled.isChecked())
+        self.config.set("compute.allow_igpu", self.igpu_enabled.isChecked())
+        self.config.set("compute.low_resource_mode", self.low_resource.isChecked())
 
         self.config.set("batch4.default_scope", self.conv_scope.currentText())
         self.config.set("batch4.history_chars", self.conv_history_chars.value())
@@ -486,6 +651,12 @@ class SettingsDialog(QDialog):
                 "explorer.thumbnails",
                 "performance.max_threads",
                 "performance.cache_size_mb",
+                "compute.cpu_threads",
+                "compute.embed_batch",
+                "compute.backend",
+                "compute.gpu_enabled",
+                "compute.allow_igpu",
+                "compute.low_resource_mode",
             ):
                 self.repository.set_setting(key, str(self.config.get(key)))
 
@@ -502,4 +673,11 @@ class SettingsDialog(QDialog):
         self.bus.settings_changed.emit("appearance.theme")
         self.bus.settings_changed.emit("explorer.default_view")
         self.bus.settings_changed.emit("performance.max_threads")
+        self.bus.settings_changed.emit("performance.cache_size_mb")
+        self.bus.settings_changed.emit("compute.cpu_threads")
+        self.bus.settings_changed.emit("compute.embed_batch")
+        self.bus.settings_changed.emit("compute.backend")
+        self.bus.settings_changed.emit("compute.gpu_enabled")
+        self.bus.settings_changed.emit("compute.allow_igpu")
+        self.bus.settings_changed.emit("compute.low_resource_mode")
         self.accept()

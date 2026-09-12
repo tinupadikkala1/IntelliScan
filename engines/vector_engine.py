@@ -120,14 +120,25 @@ class VectorEngine:
                 )
                 return False
 
+            # Reject duplicates — same chunk_id must not occupy two slots.
+            # Duplicates are the #1 cause of FAISS ntotal != len(ids) drift.
+            if chunk_id in self._chunk_ids:
+                logger.debug("Duplicate chunk_id %s ignored", chunk_id[:8])
+                return True
+            if hasattr(self, "_id_to_index") and chunk_id in self._id_to_index:
+                logger.debug("Duplicate chunk_id %s ignored (map)", chunk_id[:8])
+                return True
+
             # Normalize for cosine similarity
             vec = vector.reshape(1, -1).astype(np.float32)
             faiss.normalize_L2(vec)
 
             self._index.add(vec)
-            if hasattr(self, "_id_to_index"):
-                self._id_to_index[chunk_id] = len(self._chunk_ids)
             self._chunk_ids.append(chunk_id)
+            if hasattr(self, "_id_to_index"):
+                self._id_to_index[chunk_id] = len(self._chunk_ids) - 1
+            else:
+                self._id_to_index = {cid: i for i, cid in enumerate(self._chunk_ids)}
             return True
         except Exception as e:
             logger.error("Failed to add vector for chunk %s: %s", chunk_id[:8], e)
@@ -260,7 +271,9 @@ class VectorEngine:
                 self._index = faiss.IndexFlatIP(self._dimension)
 
             self._chunk_ids = new_chunk_ids
-            self._id_to_index = {}
+            # Rebuild map incrementally (was {} reset — broke get_vector_by_chunk_id
+            # for all remaining vectors until next lazy rebuild).
+            self._id_to_index = {cid: i for i, cid in enumerate(self._chunk_ids)}
             logger.info("Removed %d vectors, %d remaining", removed_count, self.size)
             return removed_count
         except Exception as e:
@@ -269,7 +282,10 @@ class VectorEngine:
 
     @lock_required
     def save(self) -> bool:
-        """Save index to disk.
+        """Save index to disk atomically.
+
+        Writes to *.tmp then os.replace + fsync so a crash never leaves
+        .bin/.ids desynced (the root cause of re-index loops).
 
         Returns:
             True if saved successfully, False otherwise.
@@ -279,11 +295,30 @@ class VectorEngine:
             return False
 
         try:
-            os.makedirs(os.path.dirname(self._index_path), exist_ok=True)
-            faiss.write_index(self._index, self._index_path)
-
-            with open(self._id_map_path, "wb") as f:
-                pickle.dump(self._chunk_ids, f)
+            dirpath = os.path.dirname(self._index_path) or "."
+            os.makedirs(dirpath, exist_ok=True)
+            tmp_bin = self._index_path + ".tmp"
+            tmp_ids = (self._id_map_path + ".tmp") if self._id_map_path else None
+            faiss.write_index(self._index, tmp_bin)
+            if self._id_map_path:
+                with open(tmp_ids, "wb") as f:
+                    pickle.dump(self._chunk_ids, f)
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except Exception:
+                        pass
+            os.replace(tmp_bin, self._index_path)
+            if self._id_map_path and tmp_ids:
+                os.replace(tmp_ids, self._id_map_path)
+            try:
+                _fd = os.open(dirpath, os.O_DIRECTORY)
+                try:
+                    os.fsync(_fd)
+                finally:
+                    os.close(_fd)
+            except Exception:
+                pass
 
             logger.info("Saved vector index (%d vectors) to %s", self.size, self._index_path)
             return True
@@ -293,10 +328,26 @@ class VectorEngine:
 
     @lock_required
     def _load(self) -> bool:
-        """Load index from disk."""
+        """Load index from disk with validation."""
         try:
             if os.path.exists(self._index_path):
-                self._index = faiss.read_index(self._index_path)
+                loaded = faiss.read_index(self._index_path)
+                # Dim check — e.g. nomic 768d index vs bge-m3 1024d model.
+                try:
+                    _d = int(getattr(loaded, "d", self._dimension))
+                except Exception:
+                    _d = self._dimension
+                if _d != self._dimension:
+                    logger.error(
+                        "FAISS dim %d != expected %d (model switched?). Keeping empty index; reindex required.",
+                        _d,
+                        self._dimension,
+                    )
+                    self._index = faiss.IndexFlatIP(self._dimension)
+                    self._chunk_ids = []
+                    self._id_to_index = {}
+                    return False
+                self._index = loaded
                 logger.info("Loaded FAISS index with %d vectors", self._index.ntotal)
 
             if self._id_map_path and os.path.exists(self._id_map_path):
@@ -304,7 +355,33 @@ class VectorEngine:
                     self._chunk_ids = pickle.load(f)
                 logger.info("Loaded %d chunk ID mappings", len(self._chunk_ids))
 
-            self._id_to_index = {}
+            # Validate ntotal vs ids — truncate to consistent state instead of
+            # silently running desynced (caused phantom re-index prompts).
+            try:
+                _n = int(self._index.ntotal)
+            except Exception:
+                _n = len(self._chunk_ids)
+            if _n != len(self._chunk_ids):
+                logger.error(
+                    "FAISS desync: ntotal=%d vs ids=%d — truncating to consistent prefix",
+                    _n,
+                    len(self._chunk_ids),
+                )
+                _keep = min(_n, len(self._chunk_ids))
+                if _keep < _n:
+                    # rebuild with first _keep vectors
+                    vecs = np.zeros((_keep, self._dimension), dtype=np.float32)
+                    for _i in range(_keep):
+                        try:
+                            vecs[_i] = self._index.reconstruct(_i)
+                        except Exception:
+                            break
+                    self._index = faiss.IndexFlatIP(self._dimension)
+                    if _keep:
+                        self._index.add(vecs)
+                self._chunk_ids = self._chunk_ids[:_keep]
+
+            self._id_to_index = {cid: i for i, cid in enumerate(self._chunk_ids)}
             return True
         except Exception as e:
             logger.error("Failed to load index: %s", e)

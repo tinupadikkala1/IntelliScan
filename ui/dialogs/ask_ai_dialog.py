@@ -49,7 +49,9 @@ class AskAIDialog(QDialog):
         self._file_path = file_path
         self._start_time: Optional[float] = None
 
-        self.setWindowTitle(f"Ask AI — {file_path.split('/')[-1] if '/' in file_path else file_path}")
+        from services.path_utils import basename as _base
+
+        self.setWindowTitle(f"Ask AI — {_base(file_path)}")
         self.setMinimumSize(650, 550)
         self.setModal(False)
 

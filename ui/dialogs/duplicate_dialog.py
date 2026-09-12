@@ -367,9 +367,12 @@ class DuplicateDialog(QDialog):
         self._select_group(self._groups[row])
 
     def refresh(self) -> None:
-        """Re-query duplicate groups (data may have changed)."""
+        """Signal the parent to re-run the duplicate scan.
+
+        Do NOT call _populate() here — the background scan will call
+        set_results() → _populate() once results are ready.
+        """
         self.refresh_requested.emit()
-        self._populate()
 
     # ------------------------------------------------------------------ #
     # ------------------------------------------------------------------ #
