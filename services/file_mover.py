@@ -100,6 +100,13 @@ def move_file(
             counts["evidence_in_memory"] = moved
         except Exception as exc:
             logger.error("Failed to update in-memory evidence paths: %s", exc)
+            counts.setdefault("sync_errors", []).append(f"in-memory evidence: {exc}")
+
+    if session_factory is not None:
+        sync_errors = _find_old_path_references(session_factory, src)
+        if sync_errors:
+            counts["sync_errors"] = sync_errors
+    counts["synchronized"] = not counts.get("sync_errors")
 
     logger.info("Moved %s → %s (%s)", src, target, counts)
     return MoveResult(ok=True, source=src, destination=target, counts=counts)
@@ -174,6 +181,13 @@ def rename_file(
             counts["evidence_in_memory"] = moved
         except Exception as exc:
             logger.error("Failed to update in-memory evidence paths: %s", exc)
+            counts.setdefault("sync_errors", []).append(f"in-memory evidence: {exc}")
+
+    if session_factory is not None:
+        sync_errors = _find_old_path_references(session_factory, src)
+        if sync_errors:
+            counts["sync_errors"] = sync_errors
+    counts["synchronized"] = not counts.get("sync_errors")
 
     logger.info("Renamed %s → %s (%s)", src, target, counts)
     return MoveResult(ok=True, source=src, destination=target, counts=counts)
@@ -329,3 +343,48 @@ def _sync_legacy_files_table(session_factory, src: str, dst: str) -> dict:
     except Exception as exc:
         logger.error("Legacy files-table path update failed for %s: %s", src, exc)
         return {"legacy_files": 0}
+
+
+def _find_old_path_references(session_factory, path: str) -> list[str]:
+    """Find persisted derived layers that still point to the old path."""
+    try:
+        from database.models import (
+            CollectionItem,
+            DuplicateSuggestion,
+            Evidence,
+            FileRelationship,
+            OrganizationSuggestion,
+            VectorMap,
+        )
+        from services.sqlite_indexer import IndexedFile
+
+        with session_factory() as session:
+            checks = (
+                ("indexed_files", session.query(IndexedFile).filter(
+                    IndexedFile.absolute_path == path
+                ).first()),
+                ("evidence", session.query(Evidence).filter(
+                    Evidence.file_path == path
+                ).first()),
+                ("vector_map", session.query(VectorMap).filter(
+                    VectorMap.file_path == path
+                ).first()),
+                ("relationships", session.query(FileRelationship).filter(
+                    (FileRelationship.source_path == path)
+                    | (FileRelationship.target_path == path)
+                ).first()),
+                ("collection_items", session.query(CollectionItem).filter(
+                    CollectionItem.file_path == path
+                ).first()),
+                ("suggestions", session.query(OrganizationSuggestion).filter(
+                    OrganizationSuggestion.file_path == path
+                ).first()),
+                ("duplicate_suggestions", session.query(DuplicateSuggestion).filter(
+                    (DuplicateSuggestion.keep_path == path)
+                    | (DuplicateSuggestion.remove_path == path)
+                ).first()),
+            )
+            return [name for name, row in checks if row is not None]
+    except Exception as exc:
+        logger.error("Could not verify path synchronization for %s: %s", path, exc)
+        return [f"verification: {exc}"]

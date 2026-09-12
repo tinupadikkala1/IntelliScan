@@ -182,11 +182,11 @@ class MainWindow(QMainWindow):
         self.menu.open_settings.connect(self._open_settings)
         self.menu.open_workspace_chat.connect(self._on_workspace_chat_requested)
         self.menu.open_knowledge_graph.connect(self._on_knowledge_graph_requested)
-        self.menu.open_agent_mode.connect(self._on_agent_mode_requested)
+        # self.menu.open_agent_mode.connect(self._on_agent_mode_requested)  # commented out — not in use
         self.menu.open_conversation_history.connect(self._on_conversation_history_requested)
         self.menu.open_duplicates.connect(self._on_duplicates_requested)
         self.menu.open_saved_searches.connect(self._on_saved_searches_requested)
-        self.menu.open_collections.connect(self._on_collections_requested)
+        # self.menu.open_collections.connect(self._on_collections_requested)  # commented out — not in use
         self.menu.open_dashboard.connect(self._on_dashboard_requested)
         self.menu.open_file_relationships.connect(self._on_file_relationships_requested)
         self.menu.open_metadata_export.connect(self._on_metadata_export_requested)

@@ -64,6 +64,45 @@ def _seed(sf):
 
 
 class TestFolderIntelligence:
+    def test_partial_index_includes_unindexed_disk_files(self, session_factory, tmp_path):
+        from services.folder_intelligence_service import FolderIntelligenceService
+        from services.sqlite_indexer import IndexedFile
+
+        folder = tmp_path / "workspace"
+        folder.mkdir()
+        indexed = folder / "indexed.txt"
+        unindexed = folder / "new.txt"
+        indexed.write_text("indexed")
+        unindexed.write_text("new")
+        with session_factory() as s:
+            s.add(IndexedFile(
+                filename=indexed.name,
+                absolute_path=str(indexed),
+                size=indexed.stat().st_size,
+                extension=".txt",
+                checksum="a" * 64,
+                indexing_status="completed",
+            ))
+            s.commit()
+
+        info = FolderIntelligenceService(session_factory).analyze(str(folder))
+        assert info.total_files == 2
+        assert info.indexed_count == 1
+        assert info.unindexed_count == 1
+
+    def test_non_recursive_scope_excludes_nested_files(self, session_factory, tmp_path):
+        from services.folder_intelligence_service import FolderIntelligenceService
+
+        folder = tmp_path / "workspace"
+        nested = folder / "nested"
+        nested.mkdir(parents=True)
+        (folder / "top.txt").write_text("top")
+        (nested / "child.txt").write_text("child")
+
+        service = FolderIntelligenceService(session_factory)
+        assert service.analyze(str(folder), recursive=False).total_files == 1
+        assert service.analyze(str(folder), recursive=True).total_files == 2
+
     def test_stats_under_folder(self, session_factory):
         from services.folder_intelligence_service import FolderIntelligenceService
 

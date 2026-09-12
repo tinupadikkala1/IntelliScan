@@ -115,6 +115,7 @@ class TestFileMover:
 
             result = move_file(str(src), str(dst_dir), session_factory=sf)
             assert result.ok is True
+            assert result.counts["synchronized"] is True
             dst = dst_dir / "doc.txt"
             assert dst.exists()
 

@@ -618,6 +618,7 @@ class Container:
             self._folder_intelligence_service = FolderIntelligenceService(
                 session_factory=self.db.session,
                 folder_classification_service=self.folder_classification_service,
+                recursive=self.config.get("batch6.folder_classification_recursive", True),
             )
         return self._folder_intelligence_service
 
@@ -741,4 +742,3 @@ class Container:
             self.db.dispose()
         except Exception:
             pass
-

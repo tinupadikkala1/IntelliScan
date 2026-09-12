@@ -107,6 +107,76 @@ def _remove_suggestions(session_factory, abs_path: str) -> int:
         return 0
 
 
+def _remove_duplicate_suggestions(session_factory, abs_path: str) -> int:
+    """Remove duplicate recommendations that reference a deleted path."""
+    try:
+        from database.models import DuplicateSuggestion
+
+        with session_factory() as session:
+            count = (
+                session.query(DuplicateSuggestion)
+                .filter(
+                    (DuplicateSuggestion.keep_path == abs_path)
+                    | (DuplicateSuggestion.remove_path == abs_path)
+                )
+                .delete(synchronize_session=False)
+            )
+            session.commit()
+            return count or 0
+    except Exception as exc:
+        logger.error(
+            "Failed to remove duplicate suggestions for %s: %s", abs_path, exc
+        )
+        return 0
+
+
+def _verify_database_cleanup(session_factory, abs_path: str) -> list[str]:
+    """Return persisted layers that still reference a deleted path."""
+    remaining: list[str] = []
+    try:
+        from database.models import (
+            CollectionItem,
+            DuplicateSuggestion,
+            Evidence,
+            FileRelationship,
+            OrganizationSuggestion,
+            VectorMap,
+        )
+        from services.sqlite_indexer import IndexedFile
+
+        with session_factory() as session:
+            checks = (
+                ("indexed_files", session.query(IndexedFile).filter(
+                    IndexedFile.absolute_path == abs_path
+                ).first()),
+                ("evidence", session.query(Evidence).filter(
+                    Evidence.file_path == abs_path
+                ).first()),
+                ("vector_map", session.query(VectorMap).filter(
+                    VectorMap.file_path == abs_path
+                ).first()),
+                ("relationships", session.query(FileRelationship).filter(
+                    (FileRelationship.source_path == abs_path)
+                    | (FileRelationship.target_path == abs_path)
+                ).first()),
+                ("collection_members", session.query(CollectionItem).filter(
+                    CollectionItem.file_path == abs_path
+                ).first()),
+                ("suggestions", session.query(OrganizationSuggestion).filter(
+                    OrganizationSuggestion.file_path == abs_path
+                ).first()),
+                ("duplicate_suggestions", session.query(DuplicateSuggestion).filter(
+                    (DuplicateSuggestion.keep_path == abs_path)
+                    | (DuplicateSuggestion.remove_path == abs_path)
+                ).first()),
+            )
+            remaining.extend(name for name, row in checks if row is not None)
+    except Exception as exc:
+        logger.error("Could not verify cleanup for %s: %s", abs_path, exc)
+        remaining.append(f"verification: {exc}")
+    return remaining
+
+
 def cleanup_deleted_file(
     abs_path: str,
     session_factory=None,
@@ -132,6 +202,8 @@ def cleanup_deleted_file(
         "relationships": 0,
         "collection_members": 0,
         "suggestions": 0,
+        "duplicate_suggestions": 0,
+        "errors": [],
     }
 
     # 1. Batch-1 index row.
@@ -144,11 +216,13 @@ def cleanup_deleted_file(
             report["evidence_chunks"] = retrieval.remove_file(abs_path)
         except Exception as exc:
             logger.error("Failed to remove AI evidence for %s: %s", abs_path, exc)
+            report["errors"].append(f"evidence: {exc}")
     if db_store is not None:
         try:
             db_store.delete_evidence_by_file(abs_path)
         except Exception as exc:
             logger.error("Failed to remove DB evidence for %s: %s", abs_path, exc)
+            report["errors"].append(f"database evidence: {exc}")
 
     # 3. Knowledge graph.
     if graph_engine is not None:
@@ -156,6 +230,7 @@ def cleanup_deleted_file(
             report["graph_links"] = graph_engine.remove_file(abs_path)
         except Exception as exc:
             logger.error("Failed to remove graph data for %s: %s", abs_path, exc)
+            report["errors"].append(f"graph: {exc}")
 
     # 4. File relationships (both directions).
     if session_factory is not None:
@@ -168,6 +243,13 @@ def cleanup_deleted_file(
     # 6. Organization suggestions.
     if session_factory is not None:
         report["suggestions"] = _remove_suggestions(session_factory, abs_path)
+        report["duplicate_suggestions"] = _remove_duplicate_suggestions(
+            session_factory, abs_path
+        )
+        report["errors"].extend(
+            f"database layer still references deleted path: {layer}"
+            for layer in _verify_database_cleanup(session_factory, abs_path)
+        )
 
     # Persist the trimmed FAISS index once at the end.
     if vector_engine is not None and (report["evidence_chunks"] or report["indexed_row"]):
@@ -175,7 +257,9 @@ def cleanup_deleted_file(
             vector_engine.save()
         except Exception as exc:
             logger.error("Failed to save FAISS index after cleanup: %s", exc)
+            report["errors"].append(f"vector index: {exc}")
 
+    report["status"] = "completed_with_errors" if report["errors"] else "completed"
     logger.info("Cleanup for deleted %s: %s", abs_path, report)
     return report
 

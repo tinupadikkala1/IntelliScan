@@ -53,6 +53,10 @@ class FolderIntelligenceInfo:
     dominant_category: str = "other"
     category_distribution: Dict[str, int] = field(default_factory=dict)
     top_keywords: List[str] = field(default_factory=list)
+    indexed_count: int = 0
+    unindexed_count: int = 0
+    stale_count: int = 0
+    scan_errors: List[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -69,75 +73,55 @@ class FolderIntelligenceInfo:
             "dominant_category": self.dominant_category,
             "category_distribution": self.category_distribution,
             "top_keywords": self.top_keywords,
+            "indexed_count": self.indexed_count,
+            "unindexed_count": self.unindexed_count,
+            "stale_count": self.stale_count,
+            "scan_errors": self.scan_errors,
         }
 
 
 class FolderIntelligenceService:
     """Computes general folder statistics from the existing index."""
 
-    def __init__(self, session_factory, folder_classification_service=None) -> None:
+    def __init__(
+        self,
+        session_factory,
+        folder_classification_service=None,
+        recursive: bool = True,
+    ) -> None:
         self._session_factory = session_factory
         self._folder_cls = folder_classification_service
+        self._recursive = recursive
 
     # ------------------------------------------------------------------ #
-    def analyze(self, folder_path: str, recursive: bool = True) -> FolderIntelligenceInfo:
+    def analyze(self, folder_path: str, recursive: Optional[bool] = None) -> FolderIntelligenceInfo:
         """Compute statistics for a folder (prefix match over the index)."""
         folder_path = os.path.abspath(folder_path)
-        prefix = folder_path if folder_path.endswith(os.sep) else folder_path + os.sep
-
         info = FolderIntelligenceInfo(folder_path=folder_path)
 
         try:
-            from services.sqlite_indexer import IndexedFile
             from database.models import AIAnalysis
+            from services.folder_snapshot import FolderSnapshotService
 
             with self._session_factory() as session:
-                rows = session.query(IndexedFile).all()
-                files_under = []
-                for r in rows:
-                    p = r.absolute_path or ""
-                    if p == folder_path or p.startswith(prefix):
-                        files_under.append(r)
-                if not files_under:
-                    if os.path.isdir(folder_path):
-                        dates = []
-                        total_size = 0
-                        for root, _, fnames in os.walk(folder_path):
-                            for fn in fnames:
-                                fp = os.path.join(root, fn)
-                                try:
-                                    st = os.stat(fp)
-                                    total_size += st.st_size
-                                    mtime = datetime.fromtimestamp(st.st_mtime)
-                                    dates.append((mtime, fp))
-                                except Exception:
-                                    pass
-                                ext = os.path.splitext(fn)[1].lower()
-                                info.extension_distribution[ext] = (
-                                    info.extension_distribution.get(ext, 0) + 1
-                                )
-                                modality = _MODALITY_BY_EXT.get(ext, "document")
-                                info.file_type_distribution[modality] = (
-                                    info.file_type_distribution.get(modality, 0) + 1
-                                )
-                        info.total_files = sum(info.extension_distribution.values())
-                        info.total_size = total_size
-                        if dates:
-                            info.newest_file = max(dates, key=lambda d: d[0])[1]
-                            info.oldest_file = min(dates, key=lambda d: d[0])[1]
-                            info.date_range = (
-                                f"{min(d for d, _ in dates).date()} → "
-                                f"{max(d for d, _ in dates).date()}"
-                            )
-                        info.unclassified_count = info.total_files
-                    return info
-
+                if recursive is None:
+                    recursive = self._recursive
+                snapshot = FolderSnapshotService(self._session_factory).snapshot(
+                    folder_path, recursive=recursive
+                )
+                files_under = snapshot.file_entries
+                if not files_under and not os.path.isdir(folder_path):
+                    files_under = snapshot.stale_entries
                 info.total_files = len(files_under)
-                info.total_size = sum(r.size or 0 for r in files_under)
+                info.total_size = sum(entry.size or 0 for entry in files_under)
+                info.indexed_count = sum(1 for e in files_under if e.status == "indexed")
+                info.unindexed_count = sum(1 for e in files_under if e.status == "unindexed")
+                info.stale_count = len(snapshot.stale_entries)
+                info.scan_errors = snapshot.errors
 
                 # Extension + modality distribution
-                for r in files_under:
-                    ext = (r.extension or os.path.splitext(r.filename or "")[1]).lower()
+                for entry in files_under:
+                    ext = os.path.splitext(entry.path)[1].lower()
                     info.extension_distribution[ext] = (
                         info.extension_distribution.get(ext, 0) + 1
                     )
@@ -148,8 +132,8 @@ class FolderIntelligenceService:
 
                 # Date range from filesystem dates (clearly labelled)
                 dates = [
-                    (r.modified_date, r.absolute_path)
-                    for r in files_under if r.modified_date
+                    (entry.modified_date, entry.path)
+                    for entry in files_under if entry.modified_date
                 ]
                 if dates:
                     info.newest_file = max(dates, key=lambda d: d[0])[1]
@@ -161,8 +145,8 @@ class FolderIntelligenceService:
 
                 # Category distribution + keywords via AI analysis (hash-keyed)
                 hash_by_path = {
-                    r.absolute_path: r.checksum for r in files_under
-                    if r.checksum and len(r.checksum) == 64
+                    entry.path: entry.checksum for entry in files_under
+                    if entry.checksum and len(entry.checksum) == 64
                 }
                 checksums = list(set(hash_by_path.values()))
                 cats = {}
@@ -188,9 +172,7 @@ class FolderIntelligenceService:
                                               .filter(AIAnalysis.file_hash.in_(checksums))
                                               .all())
                 }
-                info.classified_count = sum(
-                    1 for h in hash_by_path.values() if h in classified_hashes
-                )
+                info.classified_count = sum(1 for h in hash_by_path.values() if h in classified_hashes)
                 info.unclassified_count = max(0, info.total_files - info.classified_count)
                 info.top_keywords = [
                     kw for kw, _ in sorted(keywords.items(), key=lambda kv: kv[1], reverse=True)

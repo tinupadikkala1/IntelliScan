@@ -260,11 +260,9 @@ class FileExplorer(QWidget):
         # Batch 3 – Semantic Search & Ask AI
         ai_menu.addSeparator()
         act_semantic_search = ai_menu.addAction("Semantic Search")
-        act_semantic_search.setVisible(False)  # Hidden temporarily (set to True to revert)
         act_ask_ai = ai_menu.addAction("Ask AI about this File")
         # Batch 4 – Folder Chat
-        act_folder_chat = ai_menu.addAction("Chat with this Folder")
-        act_folder_chat.setVisible(False)  # Hidden temporarily (set to True to revert)
+        # act_folder_chat = ai_menu.addAction("Chat with this Folder")  # commented out — not in use
         # Batch 6 – Caption Image (single image file only)
         act_caption = ai_menu.addAction("Caption Image")
         act_caption.setVisible(False)  # Hidden temporarily (set to True to revert)
@@ -279,21 +277,15 @@ class FileExplorer(QWidget):
         act_suggest_rename = ai_menu.addAction("✏️ Rename from Content (AI)…")
         act_suggest_rename_multi = ai_menu.addAction("✏️ Rename Selected Files (Multiple Selection)…")
 
-        # Batch 5 – Intelligent Organization (single file only)
-        ai_menu.addSeparator()
-        act_classify = ai_menu.addAction("Classify File")
-        act_classify.setVisible(False)  # Hidden temporarily (set to True to revert)
-        act_auto_tag = ai_menu.addAction("Auto-Tag File")
-        act_auto_tag.setVisible(False)  # Hidden temporarily (set to True to revert)
-        act_find_dups = ai_menu.addAction("Find Duplicates")
-        act_find_similar = ai_menu.addAction("Find Similar Files")
-        act_find_similar.setVisible(False)  # Hidden temporarily (set to True to revert)
-        act_find_related = ai_menu.addAction("Find Related Files")
-        act_find_related.setVisible(False)  # Hidden temporarily (set to True to revert)
-        act_view_rels = ai_menu.addAction("View Relationships")
-        act_view_rels.setVisible(False)  # Hidden temporarily (set to True to revert)
-        act_suggest_org = ai_menu.addAction("Suggest Organization")
-        act_suggest_org.setVisible(False)  # Hidden temporarily (set to True to revert)
+        # Batch 5 – Intelligent Organization (single file only) — all commented out — not in use
+        # ai_menu.addSeparator()
+        # act_classify = ai_menu.addAction("Classify File")  # commented out — not in use
+        # act_auto_tag = ai_menu.addAction("Auto-Tag File")  # commented out — not in use
+        # act_find_dups = ai_menu.addAction("Find Duplicates")  # commented out — not in use
+        # act_find_similar = ai_menu.addAction("Find Similar Files")  # commented out — not in use
+        # act_find_related = ai_menu.addAction("Find Related Files")  # commented out — not in use
+        # act_view_rels = ai_menu.addAction("View Relationships")  # commented out — not in use
+        # act_suggest_org = ai_menu.addAction("Suggest Organization")  # commented out — not in use
 
         # Semantic search is always enabled; Ask AI only for single file;
         # Folder chat only for a single folder.
@@ -304,11 +296,11 @@ class FileExplorer(QWidget):
             and os.path.isfile(targets[0])
         )
         act_ask_ai.setEnabled(has_single_file)
-        has_single_folder = bool(
-            (targets and len(targets) == 1 and os.path.isdir(targets[0]))
-            or (not targets and self.current_path and os.path.isdir(self.current_path))
-        )
-        act_folder_chat.setEnabled(has_single_folder)
+        # has_single_folder = bool(
+        #     (targets and len(targets) == 1 and os.path.isdir(targets[0]))
+        #     or (not targets and self.current_path and os.path.isdir(self.current_path))
+        # )
+        # act_folder_chat.setEnabled(has_single_folder)  # commented out — not in use
         # Batch 6 — Caption Image: only for a single supported image file.
         _IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff', '.tif', '.gif', '.svg'}
         act_caption.setEnabled(
@@ -341,9 +333,8 @@ class FileExplorer(QWidget):
         elif self.current_path and os.path.isdir(self.current_path):
             folder_to_use = self.current_path
         act_suggest_rename_multi.setEnabled(bool(folder_to_use))
-        for act_b5 in (act_classify, act_auto_tag, act_find_dups, act_find_similar,
-                       act_find_related, act_view_rels, act_suggest_org):
-            act_b5.setEnabled(has_single_file)
+        # for act_b5 in (act_classify, act_auto_tag, act_find_dups, act_find_similar):  # commented out — not in use
+        #     act_b5.setEnabled(has_single_file)
 
         # Batch 6 — Folder Intelligence / Statistics
         folder_target = ""
@@ -377,11 +368,11 @@ class FileExplorer(QWidget):
             if path and os.path.isdir(path):
                 self.folder_intelligence_requested.emit(path)
             return
-        elif action is act_folder_chat:
-            path = targets[0] if targets else self.current_path
-            if path:
-                self.folder_chat_requested.emit(path)
-            return
+        # elif action is act_folder_chat:  # commented out — not in use
+        #     path = targets[0] if targets else self.current_path
+        #     if path:
+        #         self.folder_chat_requested.emit(path)
+        #     return
         elif action is act_suggest_rename_multi:
             folder = ""
             if targets and len(targets) == 1 and os.path.isdir(targets[0]):
@@ -447,20 +438,20 @@ class FileExplorer(QWidget):
                         self.rename_suggest_requested.emit(files)
                 except Exception:
                     pass
-        elif action is act_classify:
-            self.classify_requested.emit(targets[0])
-        elif action is act_auto_tag:
-            self.auto_tag_requested.emit(targets[0])
-        elif action is act_find_dups:
-            self.find_duplicates_requested.emit(targets[0])
-        elif action is act_find_similar:
-            self.find_similar_requested.emit(targets[0])
-        elif action is act_find_related:
-            self.find_related_requested.emit(targets[0])
-        elif action is act_view_rels:
-            self.view_relationships_requested.emit(targets[0])
-        elif action is act_suggest_org:
-            self.suggest_organization_requested.emit(targets[0])
+        # elif action is act_classify:  # commented out — not in use
+        #     self.classify_requested.emit(targets[0])
+        # elif action is act_auto_tag:  # commented out — not in use
+        #     self.auto_tag_requested.emit(targets[0])
+        # elif action is act_find_dups:  # commented out — not in use
+        #     self.find_duplicates_requested.emit(targets[0])
+        # elif action is act_find_similar:  # commented out — not in use
+        #     self.find_similar_requested.emit(targets[0])
+        # elif action is act_find_related:  # commented out — not in use
+        #     self.find_related_requested.emit(targets[0])
+        # elif action is act_view_rels:  # commented out — not in use
+        #     self.view_relationships_requested.emit(targets[0])
+        # elif action is act_suggest_org:  # commented out — not in use
+        #     self.suggest_organization_requested.emit(targets[0])
 
     def _check_ai_analysis_exists(self, file_path: str) -> bool:
         """Check if AI analysis exists for a file by computing its hash."""

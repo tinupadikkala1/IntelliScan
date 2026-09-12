@@ -225,6 +225,15 @@ class FolderIntelligenceDialog(QDialog):
                 )
             )
         self.stats_label.setText("\n".join(lines))
+        coverage = []
+        if getattr(fi, "unindexed_count", 0):
+            coverage.append(f"Not indexed: {fi.unindexed_count}")
+        if getattr(fi, "stale_count", 0):
+            coverage.append(f"Stale index records: {fi.stale_count}")
+        if getattr(fi, "scan_errors", None):
+            coverage.append(f"Scan errors: {len(fi.scan_errors)}")
+        if coverage:
+            self.stats_label.setText(self.stats_label.text() + "\n" + "  ·  ".join(coverage))
 
     # ------------------------------------------------------------------ #
     def _refresh_summary(self) -> None:
@@ -232,8 +241,10 @@ class FolderIntelligenceDialog(QDialog):
             return
         try:
             persisted = self._summary_service.get(self._folder_path)
-        except Exception:
-            persisted = None
+        except Exception as exc:
+            self.ai_summary_label.setText(f"Summary unavailable: {exc}")
+            self.summarize_btn.setText("✨ Generate AI Summary")
+            return
         if persisted:
             self.ai_summary_label.setText(persisted["summary"])
             self.summarize_btn.setText("🔄 Regenerate AI Summary")
@@ -254,7 +265,10 @@ class FolderIntelligenceDialog(QDialog):
         try:
             summary = self._summary_service.generate(self._folder_path)
         except Exception as exc:
-            summary = None
+            self.summarize_btn.setEnabled(True)
+            self.summarize_btn.setText("✨ Generate AI Summary")
+            self.ai_summary_label.setText(f"Summary generation failed: {exc}")
+            return
         self.summarize_btn.setEnabled(True)
         if summary:
             self.ai_summary_label.setText(summary)

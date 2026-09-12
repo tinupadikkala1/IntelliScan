@@ -363,3 +363,27 @@ class TestDeleteReindex:
 
         # Static collection keeps the surviving member (a).
         assert store1.collection_paths(handles["static_id"]) == [os.path.abspath(paths["a"])]
+
+    def test_delete_removes_duplicate_suggestion(self, tmp_path):
+        from database.models import DuplicateSuggestion
+        from services.file_cleanup import cleanup_deleted_file
+
+        db_path = str(tmp_path / "e2e_duplicate_suggestion.db")
+        sf = _make_session_factory(db_path)
+        paths = _seed_workspace(tmp_path)
+        _build_full_state(sf, paths)
+
+        with sf() as session:
+            session.add(DuplicateSuggestion(
+                group_checksum="a" * 64,
+                keep_path=paths["a"],
+                remove_path=paths["b"],
+                confidence=1.0,
+            ))
+            session.commit()
+
+        report = cleanup_deleted_file(paths["b"], session_factory=sf)
+        assert report["duplicate_suggestions"] == 1
+        assert report["status"] == "completed"
+        with sf() as session:
+            assert session.query(DuplicateSuggestion).count() == 0

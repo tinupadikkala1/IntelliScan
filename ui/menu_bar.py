@@ -20,12 +20,12 @@ class MenuBar(QObject):
     # Batch 4 entries
     open_workspace_chat = Signal()
     open_knowledge_graph = Signal()
-    open_agent_mode = Signal()
+    # open_agent_mode = Signal()  # commented out — not in use
     open_conversation_history = Signal()
     # Batch 5 entries
     open_duplicates = Signal()
     open_saved_searches = Signal()
-    open_collections = Signal()
+    # open_collections = Signal()  # commented out — not in use
     open_dashboard = Signal()
     open_file_relationships = Signal()
     # Batch 7 entries
@@ -68,19 +68,16 @@ class MenuBar(QObject):
         self.act_knowledge_graph = tools_menu.addAction("Knowledge Graph...")
         self.act_conversation_history = tools_menu.addAction("Conversation History...")
         tools_menu.addSeparator()
-        self.act_agent_mode = tools_menu.addAction("Agent Mode...")
-        self.act_agent_mode.setVisible(False)  # Hidden temporarily to prevent user confusion (set to True to revert)
-        tools_menu.addSeparator()
+        # self.act_agent_mode = tools_menu.addAction("Agent Mode...")  # commented out — not in use
+        # tools_menu.addSeparator()
         # Intelligent Organization & Inactivity Reminders
         self.act_organize_files = tools_menu.addAction("📁 Organize Files into Folder...")
         self.act_check_inactive = tools_menu.addAction("🔔 Check Inactive Files...")
         self.act_folder_statistics = tools_menu.addAction("📊 Folder Statistics...")
         self.act_duplicates = tools_menu.addAction("Duplicate Files...")
         self.act_file_relationships = tools_menu.addAction("File Relationships...")
-        self.act_file_relationships.setVisible(False)  # Hidden temporarily from Tools menu (set to True to revert)
         self.act_saved_searches = tools_menu.addAction("Saved Searches...")
-        self.act_collections = tools_menu.addAction("Collections...")
-        self.act_collections.setVisible(False)  # Hidden temporarily from Tools menu (set to True to revert)
+        # self.act_collections = tools_menu.addAction("Collections...")  # commented out — not in use
         self.act_dashboard = tools_menu.addAction("Knowledge Dashboard...")
         tools_menu.addSeparator()
         # Batch 7 — Metadata tools, timeline, comparison, image filtering
@@ -104,7 +101,7 @@ class MenuBar(QObject):
         self.act_workspace_chat.triggered.connect(self.open_workspace_chat)
         self.act_knowledge_graph.triggered.connect(self.open_knowledge_graph)
         self.act_conversation_history.triggered.connect(self.open_conversation_history)
-        self.act_agent_mode.triggered.connect(self.open_agent_mode)
+        # self.act_agent_mode.triggered.connect(self.open_agent_mode)  # commented out — not in use
         self.act_organize_files.triggered.connect(self.open_organize_files)
         self.act_check_inactive.triggered.connect(self.open_check_inactive)
         self.act_folder_statistics.triggered.connect(self.open_folder_statistics)
@@ -112,7 +109,7 @@ class MenuBar(QObject):
         self.act_duplicates.triggered.connect(self.open_duplicates)
         self.act_file_relationships.triggered.connect(self.open_file_relationships)
         self.act_saved_searches.triggered.connect(self.open_saved_searches)
-        self.act_collections.triggered.connect(self.open_collections)
+        # self.act_collections.triggered.connect(self.open_collections)  # commented out — not in use
         self.act_dashboard.triggered.connect(self.open_dashboard)
         self.act_metadata_export.triggered.connect(self.open_metadata_export)
         self.act_file_timeline.triggered.connect(self.open_file_timeline)

@@ -39,6 +39,10 @@ class FolderClassificationInfo:
     unclassified_count: int = 0
     total_files: int = 0
     classification_version: str = ""
+    ai_classified_count: int = 0
+    fallback_classified_count: int = 0
+    unindexed_count: int = 0
+    stale_count: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -49,6 +53,10 @@ class FolderClassificationInfo:
             "unclassified_count": self.unclassified_count,
             "total_files": self.total_files,
             "classification_version": self.classification_version,
+            "ai_classified_count": self.ai_classified_count,
+            "fallback_classified_count": self.fallback_classified_count,
+            "unindexed_count": self.unindexed_count,
+            "stale_count": self.stale_count,
         }
 
 
@@ -85,40 +93,34 @@ class FolderClassificationService:
     def _aggregate(self, folder_path: str) -> FolderClassificationInfo:
         """Compute the composition from indexed_files + ai_analysis."""
         try:
-            from services.sqlite_indexer import IndexedFile
             from database.models import AIAnalysis
-
-            prefix = folder_path if folder_path.endswith(os.sep) else folder_path + os.sep
+            from services.folder_snapshot import FolderSnapshotService
 
             distribution: Dict[str, int] = {}
             classified = 0
             unclassified = 0
+            ai_classified = 0
+            fallback_classified = 0
 
             with self._session_factory() as session:
-                rows = session.query(IndexedFile).all()
-                # Map content hash → normalized category for files under folder.
-                path_hashes: Dict[str, str] = {}  # absolute_path -> checksum
-                files_under = []
-                for r in rows:
-                    path = r.absolute_path or ""
-                    if path == folder_path or path.startswith(prefix):
-                        files_under.append(path)
-                        if r.checksum:
-                            path_hashes[path] = r.checksum
-                if not files_under and os.path.isdir(folder_path):
-                    for root, _, fnames in os.walk(folder_path):
-                        for fn in fnames:
-                            files_under.append(os.path.join(root, fn))
-                if not files_under:
+                snapshot = FolderSnapshotService(self._session_factory).snapshot(
+                    folder_path, recursive=self._recursive
+                )
+                entries = snapshot.file_entries
+                # Preserve indexed metadata for callers/tests that inspect a
+                # previously indexed path after its folder is unavailable.
+                if not entries and not os.path.isdir(folder_path):
+                    entries = snapshot.stale_entries
+                if not entries:
                     return FolderClassificationInfo(
                         folder_path=folder_path,
                         distribution={},
                         classification_version=self._version,
+                        stale_count=len(snapshot.stale_entries),
                     )
 
-                # Load normalized categories for the relevant checksums.
                 cats_by_hash: Dict[str, str] = {}
-                checksums = [h for h in path_hashes.values() if h]
+                checksums = [entry.checksum for entry in entries if entry.checksum]
                 if checksums:
                     cats = (
                         session.query(AIAnalysis.normalized_category, AIAnalysis.file_hash)
@@ -139,18 +141,20 @@ class FolderClassificationService:
                 fallback_fn = getattr(self._classifier, "category_for_path", None)
             from services.classification_engine import category_from_extension
 
-            for path in files_under:
-                cat = None
-                cat = cats_by_hash.get(path_hashes.get(path, ""), "")
-                if not cat and fallback_fn is not None:
+            for entry in entries:
+                cat = cats_by_hash.get(entry.checksum or "", "")
+                if cat:
+                    ai_classified += 1
+                elif fallback_fn is not None:
                     try:
-                        cat = fallback_fn(path)
+                        cat = fallback_fn(entry.path)
                     except Exception:
                         cat = None
                 if not cat:
-                    cat = category_from_extension(path) or "other"
-                # category_from_extension can return "other" for unknown exts;
-                # treat it as classified (deterministic) but keep the value.
+                    cat = category_from_extension(entry.path) or "other"
+                    fallback_classified += 1
+                elif not cats_by_hash.get(entry.checksum or "", ""):
+                    fallback_classified += 1
                 distribution[cat] = distribution.get(cat, 0) + 1
                 if cat and cat != "other":
                     classified += 1
@@ -164,8 +168,12 @@ class FolderClassificationService:
                 distribution=distribution,
                 classified_count=classified,
                 unclassified_count=unclassified,
-                total_files=len(files_under),
+                total_files=len(entries),
                 classification_version=self._version,
+                ai_classified_count=ai_classified,
+                fallback_classified_count=fallback_classified,
+                unindexed_count=sum(1 for e in entries if e.status == "unindexed"),
+                stale_count=len(snapshot.stale_entries),
             )
         except Exception as exc:
             logger.error("Folder classification failed for %s: %s", folder_path, exc)
